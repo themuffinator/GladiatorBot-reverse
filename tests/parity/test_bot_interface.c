@@ -12,6 +12,7 @@
 
 #include "q2bridge/bridge.h"
 #include "botlib/interface/bot_interface.h"
+#include "botlib/interface/botlib_interface.h"
 #include "botlib/interface/bot_state.h"
 #include "botlib/ai_chat/ai_chat.h"
 #include "botlib/ea/ea_local.h"
@@ -496,38 +497,51 @@ static const captured_print_t *Mock_FindPrintEntry(const mock_bot_import_t *mock
 }
 
 static void Mock_AssertPrintContains(const mock_bot_import_t *mock,
-                                     const char *needle,
-                                     int expected_type)
+					 const char *needle,
+					 int expected_type)
 {
-    const captured_print_t *entry = Mock_FindPrintEntry(mock, needle);
-    assert_non_null(entry);
-    if (expected_type >= 0)
-    {
-    assert_int_equal(entry->type, expected_type);
-    }
+	const captured_print_t *entry = Mock_FindPrintEntry(mock, needle);
+	assert_non_null(entry);
+	if (expected_type >= 0)
+	{
+		assert_int_equal(entry->type, expected_type);
+	}
 }
 
+/*
+=============
+test_console_commands_register
+
+Confirms BotSetupLibrary registers the console helpers and teardown clears them.
+=============
+*/
 static void test_console_commands_register(void **state)
 {
-    bot_interface_test_context_t *context = (bot_interface_test_context_t *)*state;
+	bot_interface_test_context_t *context = (bot_interface_test_context_t *)*state;
 
-    Mock_Reset(&context->mock);
+	Mock_Reset(&context->mock);
 
-    int status = context->api->BotSetupLibrary();
-    assert_int_equal(status, BLERR_NOERROR);
+	int status = context->api->BotSetupLibrary();
+	assert_int_equal(status, BLERR_NOERROR);
 
-    assert_int_equal(context->mock.command_count, 3);
-    assert_string_equal(context->mock.commands[0].name, "bot_test");
-    assert_non_null(context->mock.commands[0].function);
-    assert_string_equal(context->mock.commands[1].name, "aas_showpath");
-    assert_non_null(context->mock.commands[1].function);
-    assert_string_equal(context->mock.commands[2].name, "aas_showareas");
-    assert_non_null(context->mock.commands[2].function);
+	assert_int_equal(context->mock.command_count, 3);
+	assert_string_equal(context->mock.commands[0].name, "bot_test");
+	assert_non_null(context->mock.commands[0].function);
+	assert_string_equal(context->mock.commands[1].name, "aas_showpath");
+	assert_non_null(context->mock.commands[1].function);
+	assert_string_equal(context->mock.commands[2].name, "aas_showareas");
 
-    context->api->BotShutdownLibrary();
-
-    assert_int_equal(context->mock.command_count, 0);
+	context->api->BotShutdownLibrary();
+	assert_int_equal(context->mock.command_count, 0);
 }
+
+/*
+=============
+test_console_commands_invoke
+
+Validates the exported commands delegate to the same handlers as the bridge.
+=============
+*/
 
 static void test_console_commands_invoke(void **state)
 {
@@ -672,36 +686,43 @@ static int setup_bot_interface(void **state)
     return 0;
 }
 
+/*
+=============
+teardown_bot_interface
+
+Releases the parity harness fixtures and shuts down the active botlib.
+=============
+*/
 static int teardown_bot_interface(void **state)
 {
-    bot_interface_test_context_t *context =
-        (bot_interface_test_context_t *)(state != NULL ? *state : NULL);
+	bot_interface_test_context_t *context =
+		(bot_interface_test_context_t *)(state != NULL ? *state : NULL);
 
-    if (context != NULL && context->api != NULL)
-    {
-        context->api->BotShutdownLibrary();
-    }
+	if (context != NULL && context->api != NULL && BotLibraryInitialized())
+	{
+		context->api->BotShutdownLibrary();
+	}
 
-    if (context != NULL)
-    {
-        asset_env_cleanup(&context->assets);
-    }
+	if (context != NULL)
+	{
+		asset_env_cleanup(&context->assets);
+	}
 
-    if (context != NULL && context->libvar_initialised)
-    {
-        LibVar_Shutdown();
-        context->libvar_initialised = false;
-    }
+	if (context != NULL && context->libvar_initialised)
+	{
+		LibVar_Shutdown();
+		context->libvar_initialised = false;
+	}
 
-    BotState_ShutdownAll();
-    g_active_mock = NULL;
-    BotInterface_SetImportTable(NULL);
-    if (context != NULL)
-    {
-        BotlibContract_Free(&context->catalogue);
-    }
-    free(context);
-    return 0;
+	BotState_ShutdownAll();
+	g_active_mock = NULL;
+	BotInterface_SetImportTable(NULL);
+	if (context != NULL)
+	{
+		BotlibContract_Free(&context->catalogue);
+	}
+	free(context);
+	return 0;
 }
 
 static void test_bot_load_map_requires_library(void **state)
@@ -730,6 +751,191 @@ static void test_bot_load_map_requires_library(void **state)
         BotlibContract_FindReturnCode(failure, BLERR_LIBRARYNOTSETUP);
     assert_non_null(expected_status);
     assert_int_equal(status, expected_status->value);
+}
+
+
+/*
+=============
+test_bot_setup_library_guard_emits_message
+
+Ensures repeated setup attempts log the legacy guard diagnostic.
+=============
+*/
+static void test_bot_setup_library_guard_emits_message(void **state)
+{
+	bot_interface_test_context_t *context = (bot_interface_test_context_t *)*state;
+
+	Mock_Reset(&context->mock);
+
+	int status = context->api->BotSetupLibrary();
+	assert_int_equal(status, BLERR_NOERROR);
+
+	Mock_ClearPrints(&context->mock);
+
+	status = context->api->BotSetupLibrary();
+	assert_int_equal(status, BLERR_LIBRARYALREADYSETUP);
+	Mock_AssertPrintContains(&context->mock, "bot library already setup", PRT_ERROR);
+
+	context->api->BotShutdownLibrary();
+}
+
+/*
+=============
+test_bot_shutdown_library_guard_emits_message
+
+Validates the shutdown export emits the HLIL guard diagnostic.
+=============
+*/
+static void test_bot_shutdown_library_guard_emits_message(void **state)
+{
+	bot_interface_test_context_t *context = (bot_interface_test_context_t *)*state;
+
+	Mock_Reset(&context->mock);
+	Mock_ClearPrints(&context->mock);
+
+	int status = context->api->BotShutdownLibrary();
+	assert_int_equal(status, BLERR_LIBRARYNOTSETUP);
+	Mock_AssertPrintContains(&context->mock, "bot library already shutdown", PRT_ERROR);
+
+	status = context->api->BotSetupLibrary();
+	assert_int_equal(status, BLERR_NOERROR);
+	status = context->api->BotShutdownLibrary();
+	assert_int_equal(status, BLERR_NOERROR);
+}
+
+/*
+=============
+test_bot_shutdown_client_requires_library
+
+Checks the shutdown export enforces the library guard path.
+=============
+*/
+static void test_bot_shutdown_client_requires_library(void **state)
+{
+	bot_interface_test_context_t *context = (bot_interface_test_context_t *)*state;
+
+	Mock_Reset(&context->mock);
+	Mock_ClearPrints(&context->mock);
+
+	int status = context->api->BotShutdownClient(1);
+	assert_int_equal(status, BLERR_LIBRARYNOTSETUP);
+	Mock_AssertPrintContains(&context->mock,
+	                         "BotShutdownClient: library not initialised",
+	                         PRT_ERROR);
+}
+
+/*
+=============
+test_bot_move_client_requires_library
+
+Ensures BotMoveClient logs the guard diagnostic before setup.
+=============
+*/
+static void test_bot_move_client_requires_library(void **state)
+{
+	bot_interface_test_context_t *context = (bot_interface_test_context_t *)*state;
+
+	Mock_Reset(&context->mock);
+	Mock_ClearPrints(&context->mock);
+
+	int status = context->api->BotMoveClient(0, 1);
+	assert_int_equal(status, BLERR_LIBRARYNOTSETUP);
+	Mock_AssertPrintContains(&context->mock,
+	                         "BotMoveClient: library not initialised",
+	                         PRT_ERROR);
+}
+
+/*
+=============
+test_bot_client_settings_requires_library
+
+Verifies BotClientSettings refuses to run before setup.
+=============
+*/
+static void test_bot_client_settings_requires_library(void **state)
+{
+	bot_interface_test_context_t *context = (bot_interface_test_context_t *)*state;
+
+	Mock_Reset(&context->mock);
+	Mock_ClearPrints(&context->mock);
+
+	bot_clientsettings_t settings;
+	memset(&settings, 0x7f, sizeof(settings));
+
+	int status = context->api->BotClientSettings(1, &settings);
+	assert_int_equal(status, BLERR_LIBRARYNOTSETUP);
+	Mock_AssertPrintContains(&context->mock,
+	                         "BotClientSettings: library not initialised",
+	                         PRT_ERROR);
+}
+
+/*
+=============
+test_bot_settings_requires_library
+
+Verifies BotSettings enforces the library guard before use.
+=============
+*/
+static void test_bot_settings_requires_library(void **state)
+{
+	bot_interface_test_context_t *context = (bot_interface_test_context_t *)*state;
+
+	Mock_Reset(&context->mock);
+	Mock_ClearPrints(&context->mock);
+
+	bot_settings_t settings;
+	memset(&settings, 0x7f, sizeof(settings));
+
+	int status = context->api->BotSettings(1, &settings);
+	assert_int_equal(status, BLERR_LIBRARYNOTSETUP);
+	Mock_AssertPrintContains(&context->mock,
+	                         "BotSettings: library not initialised",
+	                         PRT_ERROR);
+}
+
+/*
+=============
+test_bot_test_debug_draw_toggles_bridge
+
+Confirms the Test command toggles bridge debug line state.
+=============
+*/
+static void test_bot_test_debug_draw_toggles_bridge(void **state)
+{
+	bot_interface_test_context_t *context = (bot_interface_test_context_t *)*state;
+
+	Mock_Reset(&context->mock);
+	assert_false(Q2Bridge_DebugLinesEnabled());
+
+	int status = context->api->BotSetupLibrary();
+	assert_int_equal(status, BLERR_NOERROR);
+	assert_false(Q2Bridge_DebugLinesEnabled());
+
+	Mock_ClearPrints(&context->mock);
+	status = context->api->Test(0, "debug_draw on", NULL, NULL);
+	assert_int_equal(status, BLERR_NOERROR);
+	assert_true(Q2Bridge_DebugLinesEnabled());
+	Mock_AssertPrintContains(&context->mock,
+	                         "Test debug_draw: enabled",
+	                         PRT_MESSAGE);
+
+	Mock_ClearPrints(&context->mock);
+	status = context->api->Test(0, "debug_draw off", NULL, NULL);
+	assert_int_equal(status, BLERR_NOERROR);
+	assert_false(Q2Bridge_DebugLinesEnabled());
+	Mock_AssertPrintContains(&context->mock,
+	                         "Test debug_draw: disabled",
+	                         PRT_MESSAGE);
+
+	Mock_ClearPrints(&context->mock);
+	status = context->api->Test(0, "debug_draw", NULL, NULL);
+	assert_int_equal(status, BLERR_NOERROR);
+	assert_true(Q2Bridge_DebugLinesEnabled());
+	Mock_AssertPrintContains(&context->mock,
+	                         "Test debug_draw: enabled",
+	                         PRT_MESSAGE);
+
+	context->api->BotShutdownLibrary();
 }
 
 static void test_bot_load_map_and_sensory_queues(void **state)
@@ -1825,49 +2031,70 @@ static void test_bot_start_frame_updates_routing_diagnostics(void **state)
 int main(void)
 {
     const struct CMUnitTest tests[] = {
-        cmocka_unit_test_setup_teardown(test_console_commands_register,
-                                        setup_bot_interface,
-                                        teardown_bot_interface),
-        cmocka_unit_test_setup_teardown(test_console_commands_invoke,
-                                        setup_bot_interface,
-                                        teardown_bot_interface),
-        cmocka_unit_test_setup_teardown(test_bot_load_map_requires_library,
-                                        setup_bot_interface,
-                                        teardown_bot_interface),
-        cmocka_unit_test_setup_teardown(test_bot_load_map_and_sensory_queues,
-                                        setup_bot_interface,
-                                        teardown_bot_interface),
-        cmocka_unit_test_setup_teardown(test_bot_usehook_defaults_disabled,
-                                        setup_bot_interface,
-                                        teardown_bot_interface),
-        cmocka_unit_test_setup_teardown(test_bot_console_message_and_ai_pipeline,
-                                        setup_bot_interface,
-                                        teardown_bot_interface),
-        cmocka_unit_test_setup_teardown(test_bot_lib_var_set_propagates_import_status,
-                                        setup_bot_interface,
-                                        teardown_bot_interface),
-        cmocka_unit_test_setup_teardown(test_bot_lib_var_cache_tracks_updates,
-                                        setup_bot_interface,
-                                        teardown_bot_interface),
-        cmocka_unit_test_setup_teardown(test_bot_update_entity_populates_aas,
-                                        setup_bot_interface,
-                                        teardown_bot_interface),
-        cmocka_unit_test_setup_teardown(test_bot_interface_mover_parity,
-                                        setup_bot_interface,
-                                        teardown_bot_interface),
-        cmocka_unit_test_setup_teardown(test_bot_start_frame_entity_lifecycle,
-                                        setup_bot_interface,
-                                        teardown_bot_interface),
-        cmocka_unit_test_setup_teardown(test_bot_start_frame_updates_routing_diagnostics,
-                                        setup_bot_interface,
-                                        teardown_bot_interface),
-        cmocka_unit_test_setup_teardown(test_bot_end_to_end_pipeline_with_assets,
-                                        setup_bot_interface,
-                                        teardown_bot_interface),
-        cmocka_unit_test_setup_teardown(test_bot_bridge_tracks_mover_entity_updates,
-                                        setup_bot_interface,
-                                        teardown_bot_interface),
-    };
+	cmocka_unit_test_setup_teardown(test_console_commands_register,
+				setup_bot_interface,
+				teardown_bot_interface),
+	cmocka_unit_test_setup_teardown(test_console_commands_invoke,
+				setup_bot_interface,
+				teardown_bot_interface),
+	cmocka_unit_test_setup_teardown(test_bot_load_map_requires_library,
+				setup_bot_interface,
+				teardown_bot_interface),
+	cmocka_unit_test_setup_teardown(test_bot_setup_library_guard_emits_message,
+				setup_bot_interface,
+				teardown_bot_interface),
+	cmocka_unit_test_setup_teardown(test_bot_shutdown_library_guard_emits_message,
+				setup_bot_interface,
+				teardown_bot_interface),
+	cmocka_unit_test_setup_teardown(test_bot_shutdown_client_requires_library,
+				setup_bot_interface,
+				teardown_bot_interface),
+	cmocka_unit_test_setup_teardown(test_bot_move_client_requires_library,
+				setup_bot_interface,
+				teardown_bot_interface),
+	cmocka_unit_test_setup_teardown(test_bot_client_settings_requires_library,
+				setup_bot_interface,
+				teardown_bot_interface),
+	cmocka_unit_test_setup_teardown(test_bot_settings_requires_library,
+				setup_bot_interface,
+				teardown_bot_interface),
+	cmocka_unit_test_setup_teardown(test_bot_test_debug_draw_toggles_bridge,
+				setup_bot_interface,
+				teardown_bot_interface),
+	cmocka_unit_test_setup_teardown(test_bot_load_map_and_sensory_queues,
+				setup_bot_interface,
+				teardown_bot_interface),
+	cmocka_unit_test_setup_teardown(test_bot_usehook_defaults_disabled,
+				setup_bot_interface,
+				teardown_bot_interface),
+	cmocka_unit_test_setup_teardown(test_bot_console_message_and_ai_pipeline,
+				setup_bot_interface,
+				teardown_bot_interface),
+	cmocka_unit_test_setup_teardown(test_bot_lib_var_set_propagates_import_status,
+				setup_bot_interface,
+				teardown_bot_interface),
+	cmocka_unit_test_setup_teardown(test_bot_lib_var_cache_tracks_updates,
+				setup_bot_interface,
+				teardown_bot_interface),
+	cmocka_unit_test_setup_teardown(test_bot_update_entity_populates_aas,
+				setup_bot_interface,
+				teardown_bot_interface),
+	cmocka_unit_test_setup_teardown(test_bot_interface_mover_parity,
+				setup_bot_interface,
+				teardown_bot_interface),
+	cmocka_unit_test_setup_teardown(test_bot_start_frame_entity_lifecycle,
+				setup_bot_interface,
+				teardown_bot_interface),
+	cmocka_unit_test_setup_teardown(test_bot_start_frame_updates_routing_diagnostics,
+				setup_bot_interface,
+				teardown_bot_interface),
+	cmocka_unit_test_setup_teardown(test_bot_end_to_end_pipeline_with_assets,
+				setup_bot_interface,
+				teardown_bot_interface),
+	cmocka_unit_test_setup_teardown(test_bot_bridge_tracks_mover_entity_updates,
+				setup_bot_interface,
+				teardown_bot_interface),
+};
 
     return cmocka_run_group_tests(tests, NULL, NULL);
 }
