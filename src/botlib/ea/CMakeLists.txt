@@ -8,13 +8,9 @@ register_botlib_sources(
         ea_main.c
 )
 
-target_include_directories(botlib_ea
-    PUBLIC
-        ${PROJECT_SOURCE_DIR}/src
-)
-
 target_link_libraries(botlib_ea
     PUBLIC
         botlib_common
         q2bridge
+        gladiator_shared_headers
 )

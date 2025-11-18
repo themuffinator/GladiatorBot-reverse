@@ -9,6 +9,8 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 include(GNUInstallDirs)
 
 # TODO: Define targets for shared utilities under src/shared.
+# Shared headers export Quake conventions (id386, idaxp, etc.)
+add_subdirectory(src/shared)
 # TODO: Flesh out the remaining Q2 bridge entry points in src/q2bridge.
 # TODO: Expand the botlib interface implementation in src/botlib/interface.
 

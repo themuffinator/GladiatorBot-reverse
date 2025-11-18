@@ -12,11 +12,6 @@ register_botlib_sources(
         botlib_interface.c
 )
 
-target_include_directories(botlib_interface
-    PUBLIC
-        ${PROJECT_SOURCE_DIR}/src
-)
-
 target_link_libraries(botlib_interface
     PUBLIC
         botlib_common
@@ -25,4 +20,5 @@ target_link_libraries(botlib_interface
         botlib_ai
         botlib_ea
         q2bridge
+        gladiator_shared_headers
 )
