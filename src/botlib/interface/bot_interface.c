@@ -1632,42 +1632,70 @@ static char *BotVersion(void)
     return version;
 }
 
+/*
+=============
+BotSetupLibraryWrapper
+
+Initialises the botlib bridge and emits the historical startup banners.
+=============
+*/
 static int BotSetupLibraryWrapper(void)
 {
-    BotInterface_PrintBanner(PRT_MESSAGE, "------- BotLib Initialization -------\n");
-    BotInterface_PrintBanner(PRT_MESSAGE, "BotLib v0.96\n");
-    BotInterface_SetImportTable(&g_botlibImportTable);
+	if (BotLibraryInitialized())
+	{
+		BotInterface_Printf(PRT_ERROR, "bot library already setup\n");
+		return BLERR_LIBRARYALREADYSETUP;
+	}
 
-    int result = BotSetupLibrary();
-    if (result != BLERR_NOERROR)
-    {
-        return result;
-    }
+	BotInterface_PrintBanner(PRT_MESSAGE, "------- BotLib Initialization -------\n");
+	BotInterface_PrintBanner(PRT_MESSAGE, "BotLib v0.96\n");
+	BotInterface_SetImportTable(&g_botlibImportTable);
 
-    return result;
+	int result = BotSetupLibrary();
+	if (result != BLERR_NOERROR)
+	{
+		return result;
+	}
+
+	BotInterface_PrintBanner(PRT_MESSAGE, "-------------------------------------\n");
+	return result;
 }
 
+/*
+=============
+BotShutdownLibraryWrapper
+
+Tears down the botlib state and prints the shutdown banner with guard parity.
+=============
+*/
 static int BotShutdownLibraryWrapper(void)
 {
-    int result = BotShutdownLibrary();
+	if (!BotLibraryInitialized())
+	{
+		BotInterface_Printf(PRT_ERROR, "bot library already shutdown\n");
+		return BLERR_LIBRARYNOTSETUP;
+	}
 
-    BotInterface_PrintBanner(PRT_MESSAGE, "------- BotLib Shutdown -------\n");
+	int result = BotShutdownLibrary();
 
-    if (g_botInterfaceConsoleChat != NULL)
-    {
-        BotFreeChatState(g_botInterfaceConsoleChat);
-        g_botInterfaceConsoleChat = NULL;
-    }
+	BotInterface_PrintBanner(PRT_MESSAGE, "------- BotLib Shutdown -------\n");
 
-    BotInterface_ResetMapCache();
-    BotInterface_ResetEntityCache();
-    BotInterface_ResetFrameQueues();
-    g_botInterfaceDebugDrawEnabled = false;
-    Q2Bridge_SetDebugLinesEnabled(false);
+	if (g_botInterfaceConsoleChat != NULL)
+	{
+		BotFreeChatState(g_botInterfaceConsoleChat);
+		g_botInterfaceConsoleChat = NULL;
+	}
 
-    AAS_Shutdown();
+	BotInterface_ResetMapCache();
+	BotInterface_ResetEntityCache();
+	BotInterface_ResetFrameQueues();
+	g_botInterfaceDebugDrawEnabled = false;
+	Q2Bridge_SetDebugLinesEnabled(false);
 
-    return result;
+	AAS_Shutdown();
+
+	BotInterface_PrintBanner(PRT_MESSAGE, "-------------------------------------\n");
+	return result;
 }
 
 static int BotInterface_BotSetupLibrary(void)
@@ -1968,134 +1996,162 @@ static int BotSetupClient(int client, bot_settings_t *settings)
     return BLERR_NOERROR;
 }
 
+/*
+=============
+BotShutdownClient
+
+Shuts down a bot client slot and clears the bridge cache.
+=============
+*/
 static int BotShutdownClient(int client)
 {
-    if (g_botImport == NULL)
-    {
-        return BLERR_LIBRARYNOTSETUP;
-    }
+	if (!BotInterface_EnsureLibraryReady("BotShutdownClient"))
+	{
+		return BLERR_LIBRARYNOTSETUP;
+	}
 
-    if (client < 0 || client >= MAX_CLIENTS)
-    {
-        BotInterface_Printf(PRT_ERROR, "[bot_interface] BotShutdownClient: invalid client %d\n", client);
-        return BLERR_INVALIDCLIENTNUMBER;
-    }
+	if (client < 0 || client >= MAX_CLIENTS)
+	{
+		BotInterface_Printf(PRT_ERROR, "[bot_interface] BotShutdownClient: invalid client %d\n", client);
+		return BLERR_INVALIDCLIENTNUMBER;
+	}
 
-    bot_client_state_t *state = BotState_Get(client);
-    if (state == NULL || !state->active)
-    {
-        BotInterface_Printf(PRT_WARNING, "[bot_interface] BotShutdownClient: client %d not active\n", client);
-        return BLERR_AICLIENTALREADYSHUTDOWN;
-    }
+	bot_client_state_t *state = BotState_Get(client);
+	if (state == NULL || !state->active)
+	{
+		BotInterface_Printf(PRT_WARNING, "[bot_interface] BotShutdownClient: client %d not active\n", client);
+		return BLERR_AICLIENTALREADYSHUTDOWN;
+	}
 
-    BotState_Destroy(client);
-    Bridge_SetClientActive(client, qfalse);
-    Bridge_ClearClientSlot(client);
-    return BLERR_NOERROR;
+	BotState_Destroy(client);
+	Bridge_SetClientActive(client, qfalse);
+	Bridge_ClearClientSlot(client);
+	return BLERR_NOERROR;
 }
 
+/*
+=============
+BotMoveClient
+
+Migrates an active bot client to a new slot and preserves bridge state.
+=============
+*/
 static int BotMoveClient(int oldclnum, int newclnum)
 {
-    if (g_botImport == NULL)
-    {
-        return BLERR_LIBRARYNOTSETUP;
-    }
+	if (!BotInterface_EnsureLibraryReady("BotMoveClient"))
+	{
+		return BLERR_LIBRARYNOTSETUP;
+	}
 
-    if (oldclnum < 0 || oldclnum >= MAX_CLIENTS)
-    {
-        BotInterface_Printf(PRT_ERROR, "[bot_interface] BotMoveClient: invalid source client %d\n", oldclnum);
-        return BLERR_INVALIDCLIENTNUMBER;
-    }
+	if (oldclnum < 0 || oldclnum >= MAX_CLIENTS)
+	{
+		BotInterface_Printf(PRT_ERROR, "[bot_interface] BotMoveClient: invalid source client %d\n", oldclnum);
+		return BLERR_INVALIDCLIENTNUMBER;
+	}
 
-    if (newclnum < 0 || newclnum >= MAX_CLIENTS)
-    {
-        BotInterface_Printf(PRT_ERROR, "[bot_interface] BotMoveClient: invalid destination client %d\n", newclnum);
-        return BLERR_INVALIDCLIENTNUMBER;
-    }
+	if (newclnum < 0 || newclnum >= MAX_CLIENTS)
+	{
+		BotInterface_Printf(PRT_ERROR, "[bot_interface] BotMoveClient: invalid destination client %d\n", newclnum);
+		return BLERR_INVALIDCLIENTNUMBER;
+	}
 
-    if (oldclnum == newclnum)
-    {
-        return BLERR_NOERROR;
-    }
+	if (oldclnum == newclnum)
+	{
+		return BLERR_NOERROR;
+	}
 
-    bot_client_state_t *state = BotState_Get(oldclnum);
-    if (state == NULL || !state->active)
-    {
-        BotInterface_Printf(PRT_WARNING, "[bot_interface] BotMoveClient: source client %d inactive\n", oldclnum);
-        return BLERR_AIMOVEINACTIVECLIENT;
-    }
+	bot_client_state_t *state = BotState_Get(oldclnum);
+	if (state == NULL || !state->active)
+	{
+		BotInterface_Printf(PRT_WARNING, "[bot_interface] BotMoveClient: source client %d inactive\n", oldclnum);
+		return BLERR_AIMOVEINACTIVECLIENT;
+	}
 
-    if (BotState_Get(newclnum) != NULL)
-    {
-        BotInterface_Printf(PRT_WARNING, "[bot_interface] BotMoveClient: destination client %d already active\n", newclnum);
-        return BLERR_AIMOVETOACTIVECLIENT;
-    }
+	if (BotState_Get(newclnum) != NULL)
+	{
+		BotInterface_Printf(PRT_WARNING, "[bot_interface] BotMoveClient: destination client %d already active\n", newclnum);
+		return BLERR_AIMOVETOACTIVECLIENT;
+	}
 
-    BotState_Move(oldclnum, newclnum);
-    int status = Bridge_MoveClientSlot(oldclnum, newclnum);
-    if (status != BLERR_NOERROR)
-    {
-        BotInterface_Printf(PRT_ERROR,
-                            "[bot_interface] BotMoveClient: bridge move failed for %d -> %d\n",
-                            oldclnum,
-                            newclnum);
-        BotState_Move(newclnum, oldclnum);
-        return status;
-    }
-    Bridge_SetClientActive(oldclnum, qfalse);
-    Bridge_SetClientActive(newclnum, qtrue);
+	BotState_Move(oldclnum, newclnum);
+	int status = Bridge_MoveClientSlot(oldclnum, newclnum);
+	if (status != BLERR_NOERROR)
+	{
+		BotInterface_Printf(PRT_ERROR,
+		                    "[bot_interface] BotMoveClient: bridge move failed for %d -> %d\n",
+		                    oldclnum,
+		                    newclnum);
+		BotState_Move(newclnum, oldclnum);
+		return status;
+	}
+	Bridge_SetClientActive(oldclnum, qfalse);
+	Bridge_SetClientActive(newclnum, qtrue);
 
-    return BLERR_NOERROR;
+	return BLERR_NOERROR;
 }
 
+/*
+=============
+BotClientSettings
+
+Provides the stored client presentation state for an active bot.
+=============
+*/
 static int BotClientSettings(int client, bot_clientsettings_t *settings)
 {
-    if (g_botImport == NULL)
-    {
-        return BLERR_LIBRARYNOTSETUP;
-    }
+	if (!BotInterface_EnsureLibraryReady("BotClientSettings"))
+	{
+		return BLERR_LIBRARYNOTSETUP;
+	}
 
-    if (settings == NULL)
-    {
-        BotInterface_Printf(PRT_ERROR, "[bot_interface] BotClientSettings: NULL output buffer\n");
-        return BLERR_INVALIDIMPORT;
-    }
+	if (settings == NULL)
+	{
+		BotInterface_Printf(PRT_ERROR, "[bot_interface] BotClientSettings: NULL output buffer\n");
+		return BLERR_INVALIDIMPORT;
+	}
 
-    bot_client_state_t *state = BotState_Get(client);
-    if (state == NULL || !state->active)
-    {
-        BotInterface_Printf(PRT_WARNING, "[bot_interface] BotClientSettings: client %d inactive\n", client);
-        memset(settings, 0, sizeof(*settings));
-        return BLERR_SETTINGSINACTIVECLIENT;
-    }
+	bot_client_state_t *state = BotState_Get(client);
+	if (state == NULL || !state->active)
+	{
+		BotInterface_Printf(PRT_WARNING, "[bot_interface] BotClientSettings: client %d inactive\n", client);
+		memset(settings, 0, sizeof(*settings));
+		return BLERR_SETTINGSINACTIVECLIENT;
+	}
 
-    memcpy(settings, &state->client_settings, sizeof(*settings));
-    return BLERR_NOERROR;
+	memcpy(settings, &state->client_settings, sizeof(*settings));
+	return BLERR_NOERROR;
 }
 
+/*
+=============
+BotSettings
+
+Returns the original bot setup configuration for an active client.
+=============
+*/
 static int BotSettings(int client, bot_settings_t *settings)
 {
-    if (g_botImport == NULL)
-    {
-        return BLERR_LIBRARYNOTSETUP;
-    }
+	if (!BotInterface_EnsureLibraryReady("BotSettings"))
+	{
+		return BLERR_LIBRARYNOTSETUP;
+	}
 
-    if (settings == NULL)
-    {
-        BotInterface_Printf(PRT_ERROR, "[bot_interface] BotSettings: NULL output buffer\n");
-        return BLERR_INVALIDIMPORT;
-    }
+	if (settings == NULL)
+	{
+		BotInterface_Printf(PRT_ERROR, "[bot_interface] BotSettings: NULL output buffer\n");
+		return BLERR_INVALIDIMPORT;
+	}
 
-    bot_client_state_t *state = BotState_Get(client);
-    if (state == NULL || !state->active)
-    {
-        BotInterface_Printf(PRT_WARNING, "[bot_interface] BotSettings: client %d inactive\n", client);
-        memset(settings, 0, sizeof(*settings));
-        return BLERR_AICLIENTNOTSETUP;
-    }
+	bot_client_state_t *state = BotState_Get(client);
+	if (state == NULL || !state->active)
+	{
+		BotInterface_Printf(PRT_WARNING, "[bot_interface] BotSettings: client %d inactive\n", client);
+		memset(settings, 0, sizeof(*settings));
+		return BLERR_AICLIENTNOTSETUP;
+	}
 
-    memcpy(settings, &state->settings, sizeof(*settings));
-    return BLERR_NOERROR;
+	memcpy(settings, &state->settings, sizeof(*settings));
+	return BLERR_NOERROR;
 }
 
 static int BotStartFrame(float time)
