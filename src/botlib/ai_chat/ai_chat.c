@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include "botlib/common/l_libvar.h"
 #include "botlib/common/l_log.h"
@@ -61,6 +62,12 @@ typedef struct {
     size_t capacity;
 } bot_string_builder_t;
 
+typedef struct {
+    unsigned long context;
+    double duration_seconds;
+    double next_allowed_time;
+} bot_chat_cooldown_entry_t;
+
 /*
 =============
 BotChat_PrintLegacyDiagnostic
@@ -113,7 +120,184 @@ struct bot_chatstate_s {
 
     bot_reply_table_t replies;
     int has_reply_chats;
+
+    bot_chat_cooldown_entry_t *cooldowns;
+    size_t cooldown_count;
+    size_t cooldown_capacity;
+    double time_override_seconds;
+    int has_time_override;
 };
+
+/*
+=============
+BotChat_CurrentTimeSeconds
+
+Returns the synthetic clock time for cooldown evaluation.
+=============
+*/
+static double BotChat_CurrentTimeSeconds(const bot_chatstate_t *state)
+{
+	if (state != NULL && state->has_time_override)
+	{
+		return state->time_override_seconds;
+	}
+
+	return (double)clock() / (double)CLOCKS_PER_SEC;
+}
+
+/*
+=============
+BotChat_FindCooldownEntry
+
+Finds (or optionally creates) the cooldown entry for a context.
+=============
+*/
+static bot_chat_cooldown_entry_t *BotChat_FindCooldownEntry(bot_chatstate_t *state,
+unsigned long context,
+int create)
+{
+	if (state == NULL)
+	{
+		return NULL;
+	}
+
+	for (size_t i = 0; i < state->cooldown_count; ++i)
+	{
+		bot_chat_cooldown_entry_t *entry = &state->cooldowns[i];
+		if (entry->context == context)
+		{
+			return entry;
+		}
+	}
+
+	if (!create)
+	{
+		return NULL;
+	}
+
+	size_t capacity = state->cooldown_capacity ? state->cooldown_capacity : 4;
+	while (capacity <= state->cooldown_count)
+	{
+		capacity *= 2;
+	}
+	bot_chat_cooldown_entry_t *entries = realloc(state->cooldowns, capacity * sizeof(*entries));
+	if (entries == NULL)
+	{
+		return NULL;
+	}
+	state->cooldowns = entries;
+	state->cooldown_capacity = capacity;
+	bot_chat_cooldown_entry_t *entry = &state->cooldowns[state->cooldown_count++];
+	memset(entry, 0, sizeof(*entry));
+	entry->context = context;
+	return entry;
+}
+
+/*
+=============
+BotChat_ReportCooldown
+
+Queues a diagnostic when a cooldown prevents sending.
+=============
+*/
+static void BotChat_ReportCooldown(bot_chatstate_t *state,
+unsigned long context,
+double seconds_remaining)
+{
+	if (state == NULL)
+	{
+		return;
+	}
+
+	if (seconds_remaining < 0.0)
+	{
+		seconds_remaining = 0.0;
+	}
+
+	char message[BOT_CHAT_MAX_MESSAGE_CHARS];
+	snprintf(message,
+	sizeof(message),
+	"context %lu blocked by cooldown (%.2fs remaining)\n",
+	context,
+	seconds_remaining);
+	BotQueueConsoleMessage(state, (int)context, message);
+}
+
+/*
+=============
+BotChat_CooldownBlocks
+
+Updates and evaluates cooldown timers for a context.
+=============
+*/
+static int BotChat_CooldownBlocks(bot_chatstate_t *state,
+unsigned long context,
+double now_seconds)
+{
+	bot_chat_cooldown_entry_t *entry = BotChat_FindCooldownEntry(state, context, 0);
+	if (entry == NULL || entry->duration_seconds <= 0.0)
+	{
+		return 0;
+	}
+
+	if (entry->next_allowed_time > now_seconds)
+	{
+		BotChat_ReportCooldown(state, context, entry->next_allowed_time - now_seconds);
+		return 1;
+	}
+
+	entry->next_allowed_time = now_seconds + entry->duration_seconds;
+	return 0;
+}
+
+/*
+=============
+BotChat_SelectRandomTemplate
+
+Picks a template from the context using the hashing helper.
+=============
+*/
+static const char *BotChat_SelectRandomTemplate(const bot_chatstate_t *state,
+const bot_match_context_t *context,
+const char *seed)
+{
+	(void)state;
+	if (context == NULL || context->template_count == 0)
+	{
+		return NULL;
+	}
+
+	size_t index = BotChat_SelectIndex(seed, context->template_count);
+	return context->templates[index];
+}
+
+/*
+=============
+BotChat_RandomStringKnown
+
+Checks if a referenced random table identifier is recognised.
+=============
+*/
+static int BotChat_RandomStringKnown(const char *name)
+{
+	static const char *kKnownRandomTables[] = {
+		"random_misc",
+		"random_insult"
+	};
+	if (name == NULL)
+	{
+		return 0;
+	}
+
+	for (size_t i = 0; i < sizeof(kKnownRandomTables) / sizeof(kKnownRandomTables[0]); ++i)
+	{
+		if (strcmp(kKnownRandomTables[i], name) == 0)
+		{
+			return 1;
+		}
+	}
+	return 0;
+}
 
 static void BotChat_ResetConsoleQueue(bot_chatstate_t *state)
 {
@@ -1046,10 +1230,14 @@ void BotFreeChatState(bot_chatstate_t *state)
     }
 
     BotFreeChatFile(state);
-    BotChat_FreeSynonymContexts(state);
-    BotChat_FreeMatchContexts(state);
-    BotChat_FreeReplies(state);
-    FreeMemory(state);
+BotChat_FreeSynonymContexts(state);
+BotChat_FreeMatchContexts(state);
+BotChat_FreeReplies(state);
+free(state->cooldowns);
+state->cooldowns = NULL;
+state->cooldown_count = 0;
+state->cooldown_capacity = 0;
+FreeMemory(state);
 }
 
 /*
@@ -1139,18 +1327,83 @@ int BotLoadChatFile(bot_chatstate_t *state, const char *chatfile, const char *ch
 	return 1;
 }
 
-static void BotConstructChatMessage(bot_chatstate_t *state,
-                                    unsigned long context,
-                                    const char *template_text)
-{
-    if (state == NULL || template_text == NULL) {
-        return;
-    }
+/*
+=============
+BotConstructChatMessage
 
-    char buffer[BOT_CHAT_MAX_MESSAGE_CHARS];
-    strncpy(buffer, template_text, sizeof(buffer) - 1);
-    buffer[sizeof(buffer) - 1] = '\0';
-    BotQueueConsoleMessage(state, (int)context, buffer);
+Validates a chat template and queues it when the text passes safety checks.
+=============
+*/
+static int BotConstructChatMessage(bot_chatstate_t *state,
+unsigned long context,
+const char *template_text)
+{
+	if (state == NULL || template_text == NULL)
+	{
+		return 0;
+	}
+
+	const size_t max_length = BOT_CHAT_MAX_MESSAGE_CHARS - 1;
+	const size_t template_length = strlen(template_text);
+	if (template_length > max_length)
+	{
+		BotLib_Print(PRT_ERROR, "BotConstructChat: message \"%s\" too long\n", template_text);
+		return 0;
+	}
+
+	for (size_t i = 0; template_text[i] != '\0'; ++i)
+	{
+		if (template_text[i] != '\\')
+		{
+			continue;
+		}
+		const char escape = template_text[i + 1];
+		if (escape == '\0')
+		{
+			BotLib_Print(PRT_ERROR, "BotConstructChat: message \"%s\" invalid escape char\n", template_text);
+			return 0;
+		}
+		if (escape != 'r')
+		{
+			continue;
+		}
+		size_t start = i + 2;
+		size_t end = start;
+		while (template_text[end] != '\0' && template_text[end] != '\\')
+		{
+			++end;
+		}
+		if (template_text[end] != '\\')
+		{
+			BotLib_Print(PRT_ERROR, "BotConstructChat: message \"%s\" invalid escape char\n", template_text);
+			return 0;
+		}
+		size_t name_length = end - start;
+		if (name_length == 0)
+		{
+			BotLib_Print(PRT_ERROR, "BotConstructChat: unknown random string %s\n", "<empty>");
+			return 0;
+		}
+		char random_name[64];
+		if (name_length >= sizeof(random_name))
+		{
+			name_length = sizeof(random_name) - 1;
+		}
+		memcpy(random_name, template_text + start, name_length);
+		random_name[name_length] = '\0';
+		if (!BotChat_RandomStringKnown(random_name))
+		{
+			BotLib_Print(PRT_ERROR, "BotConstructChat: unknown random string %s\n", random_name);
+			return 0;
+		}
+		i = end;
+	}
+
+	char buffer[BOT_CHAT_MAX_MESSAGE_CHARS];
+	strncpy(buffer, template_text, sizeof(buffer) - 1);
+	buffer[sizeof(buffer) - 1] = '\0';
+	BotQueueConsoleMessage(state, (int)context, buffer);
+	return 1;
 }
 
 void BotFreeChatFile(bot_chatstate_t *state)
@@ -1177,9 +1430,9 @@ void BotFreeChatFile(bot_chatstate_t *state)
 
 void BotQueueConsoleMessage(bot_chatstate_t *state, int type, const char *message)
 {
-    if (state == NULL || message == NULL) {
-        return;
-    }
+if (state == NULL || message == NULL) {
+return;
+}
 
     if (state->console_count == BOT_CHAT_MAX_CONSOLE_MESSAGES) {
         // Drop the oldest message to make room. The real implementation would
@@ -1193,7 +1446,64 @@ void BotQueueConsoleMessage(bot_chatstate_t *state, int type, const char *messag
     slot->type = type;
     strncpy(slot->text, message, sizeof(slot->text) - 1);
     slot->text[sizeof(slot->text) - 1] = '\0';
-    state->console_count++;
+state->console_count++;
+}
+
+/*
+=============
+BotChat_SetTime
+
+Overrides the cooldown clock for deterministic testing. Pass a negative value
+to resume real-time sampling.
+=============
+*/
+void BotChat_SetTime(bot_chatstate_t *state, double now_seconds)
+{
+	if (state == NULL)
+	{
+		return;
+	}
+
+	if (now_seconds < 0.0)
+	{
+		state->has_time_override = 0;
+		state->time_override_seconds = 0.0;
+		return;
+	}
+
+	state->time_override_seconds = now_seconds;
+	state->has_time_override = 1;
+}
+
+/*
+=============
+BotChat_SetContextCooldown
+
+Configures the cooldown duration for the supplied context identifier.
+=============
+*/
+void BotChat_SetContextCooldown(bot_chatstate_t *state,
+unsigned long context,
+double cooldown_seconds)
+{
+	if (state == NULL)
+	{
+		return;
+	}
+
+	bot_chat_cooldown_entry_t *entry = BotChat_FindCooldownEntry(state, context, 1);
+	if (entry == NULL)
+	{
+		return;
+	}
+
+	if (cooldown_seconds < 0.0)
+	{
+		cooldown_seconds = 0.0;
+	}
+
+	entry->duration_seconds = cooldown_seconds;
+	entry->next_allowed_time = 0.0;
 }
 
 int BotNextConsoleMessage(bot_chatstate_t *state, int *type, char *buffer, size_t buffer_size)
@@ -1249,52 +1559,89 @@ size_t BotNumConsoleMessages(const bot_chatstate_t *state)
     return state->console_count;
 }
 
+/*
+=============
+BotEnterChat
+
+Builds and enqueues the MSG_ENTERGAME template while respecting cooldowns.
+=============
+*/
 void BotEnterChat(bot_chatstate_t *state, int client, int sendto)
 {
-    if (state == NULL) {
-        return;
-    }
+	if (state == NULL)
+	{
+		return;
+	}
 
-    (void)client;
-    (void)sendto;
+	(void)client;
+	(void)sendto;
 
-    bot_match_context_t *context = BotChat_FindMatchContext(state, 2); // MSG_ENTERGAME
-    if (context != NULL && context->template_count > 0) {
-        size_t index = BotChat_SelectIndex(state->active_chatname, context->template_count);
-        BotConstructChatMessage(state, 2, context->templates[index]);
-    } else {
-        BotLib_Print(PRT_MESSAGE,
-                     "BotEnterChat: no templates loaded for enter game context\n");
-    }
+	const unsigned long context = 2;
+	if (BotChat_CooldownBlocks(state, context, BotChat_CurrentTimeSeconds(state)))
+	{
+		return;
+	}
+
+	bot_match_context_t *match_context = BotChat_FindMatchContext(state, context);
+	const char *template_text = BotChat_SelectRandomTemplate(state,
+	match_context,
+	state->active_chatname);
+	if (template_text == NULL)
+	{
+		BotLib_Print(PRT_MESSAGE,
+		"BotEnterChat: no templates loaded for enter game context\n");
+		return;
+	}
+
+	BotConstructChatMessage(state, context, template_text);
 }
 
+/*
+=============
+BotReplyChat
+
+Constructs a reply by preferring match templates and falling back to reply
+tables, emitting diagnostics when no response can be generated.
+=============
+*/
 int BotReplyChat(bot_chatstate_t *state, const char *message, unsigned long int context)
 {
-    if (state == NULL || message == NULL) {
-        return 0;
-    }
-    if (!state->has_reply_chats) {
-        return 0;
-    }
+	if (state == NULL || message == NULL)
+	{
+		return 0;
+	}
 
-    bot_match_context_t *match_context = BotChat_FindMatchContext(state, context);
-    if (match_context != NULL && match_context->template_count > 0) {
-        size_t index = BotChat_SelectIndex(message, match_context->template_count);
-        BotConstructChatMessage(state, context, match_context->templates[index]);
-        return 1;
-    }
+	if (BotChat_CooldownBlocks(state, context, BotChat_CurrentTimeSeconds(state)))
+	{
+		return 0;
+	}
 
-    bot_reply_rule_t *reply_rule = BotChat_FindReplyRule(state, context);
-    if (reply_rule != NULL && reply_rule->response_count > 0) {
-        size_t index = BotChat_SelectIndex(message, reply_rule->response_count);
-        BotConstructChatMessage(state, context, reply_rule->responses[index]);
-        return 1;
-    }
+	bot_match_context_t *match_context = BotChat_FindMatchContext(state, context);
+	const char *template_text = BotChat_SelectRandomTemplate(state, match_context, message);
+	if (template_text != NULL && BotConstructChatMessage(state, context, template_text))
+	{
+		return 1;
+	}
 
-    BotLib_Print(PRT_MESSAGE,
-                 "BotReplyChat: no reply available for context %lu\n",
-                 context);
-    return 0;
+	if (!state->has_reply_chats)
+	{
+		BotLib_Print(PRT_MESSAGE, "no rchats\n");
+		return 0;
+	}
+
+	bot_reply_rule_t *reply_rule = BotChat_FindReplyRule(state, context);
+	if (reply_rule != NULL && reply_rule->response_count > 0)
+	{
+		size_t index = BotChat_SelectIndex(message, reply_rule->response_count);
+		template_text = reply_rule->responses[index];
+		if (template_text != NULL && BotConstructChatMessage(state, context, template_text))
+		{
+			return 1;
+		}
+	}
+
+	BotLib_Print(PRT_MESSAGE, "no rchats\n");
+	return 0;
 }
 
 int BotChatLength(const char *message)

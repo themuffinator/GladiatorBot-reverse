@@ -51,6 +51,17 @@ int BotRemoveConsoleMessage(bot_chatstate_t *state, int type);
 size_t BotNumConsoleMessages(const bot_chatstate_t *state);
 
 /**
+ * Overrides the synthetic clock used for chat cooldowns. Passing a negative
+ * value clears the override and resumes using the system clock.
+ */
+void BotChat_SetTime(bot_chatstate_t *state, double now_seconds);
+
+/** Configures the cooldown duration for the supplied context identifier. */
+void BotChat_SetContextCooldown(bot_chatstate_t *state,
+unsigned long context,
+double cooldown_seconds);
+
+/**
  * Placeholder for routing text to clients when BotChat_EnterGame and friends
  * eventually transition out of stub form. The TODO captures the HLIL event
  * flow for later implementation.
