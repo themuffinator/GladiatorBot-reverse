@@ -13,5 +13,9 @@ register_botlib_sources(
 target_include_directories(botlib_precomp
     PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}
-        ${PROJECT_SOURCE_DIR}/src
+)
+
+target_link_libraries(botlib_precomp
+    PUBLIC
+        gladiator_shared_headers
 )

@@ -22,6 +22,10 @@ register_botlib_sources(
 
 target_include_directories(botlib_aas
     PUBLIC
-        ${PROJECT_SOURCE_DIR}/src
         ${CMAKE_CURRENT_SOURCE_DIR}
+)
+
+target_link_libraries(botlib_aas
+    PUBLIC
+        gladiator_shared_headers
 )
