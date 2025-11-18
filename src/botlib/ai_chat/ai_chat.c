@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "botlib/common/l_libvar.h"
 #include "botlib/common/l_log.h"
 #include "botlib/common/l_memory.h"
 
@@ -59,6 +60,41 @@ typedef struct {
     size_t length;
     size_t capacity;
 } bot_string_builder_t;
+
+/*
+=============
+BotChat_PrintLegacyDiagnostic
+
+Prints the legacy chat diagnostic and optionally queues it for fastchat tests.
+=============
+*/
+static void BotChat_PrintLegacyDiagnostic(bot_chatstate_t *state,
+		int priority,
+		int fastchat_enabled,
+		const char *format,
+		const char *chatname,
+		const char *chatfile)
+{
+	if (format == NULL || chatname == NULL || chatfile == NULL)
+	{
+		return;
+	}
+
+	BotLib_Print(priority, format, chatname, chatfile);
+	if (!fastchat_enabled || state == NULL)
+	{
+		return;
+	}
+
+	char message[BOT_CHAT_MAX_MESSAGE_CHARS];
+	int written = snprintf(message, sizeof(message), format, chatname, chatfile);
+	if (written < 0)
+	{
+		return;
+	}
+
+	BotQueueConsoleMessage(state, priority, message);
+}
 
 struct bot_chatstate_s {
     pc_source_t *active_source;
@@ -1205,56 +1241,97 @@ void BotFreeChatState(bot_chatstate_t *state)
     FreeMemory(state);
 }
 
+/*
+=============
+BotLoadChatFile
+
+Loads the requested chat assets and surfaces legacy diagnostics when failures
+occur.
+=============
+*/
 int BotLoadChatFile(bot_chatstate_t *state, const char *chatfile, const char *chatname)
 {
-    if (state == NULL || chatfile == NULL || chatname == NULL) {
-        return 0;
-    }
+	if (state == NULL || chatfile == NULL || chatname == NULL)
+	{
+		return 0;
+	}
 
-    BotFreeChatFile(state);
+	const int fastchat_enabled = LibVarValue("fastchat", "0") != 0.0f;
+	if (LibVarValue("nochat", "0") != 0.0f)
+	{
+		BotChat_PrintLegacyDiagnostic(state,
+				PRT_FATAL,
+				fastchat_enabled,
+				"couldn't load chat %s from %s\n",
+				chatname,
+				chatfile);
+		return 0;
+	}
 
-    pc_source_t *source = PC_LoadSourceFile(chatfile);
-    if (source != NULL) {
-        pc_script_t *script = PS_CreateScriptFromSource(source);
-        if (script == NULL) {
-            BotLib_Print(PRT_ERROR, "BotLoadChatFile: script wrapper failed for %s\n", chatfile);
-            PC_FreeSource(source);
-        } else {
-            state->active_source = source;
-            state->active_script = script;
-        }
-    }
+	BotFreeChatFile(state);
 
-    char asset_path[512];
+	pc_source_t *source = PC_LoadSourceFile(chatfile);
+	if (source == NULL)
+	{
+		BotChat_PrintLegacyDiagnostic(state,
+				PRT_FATAL,
+				fastchat_enabled,
+				"couldn't load chat %s from %s\n",
+				chatname,
+				chatfile);
+		return 0;
+	}
 
-    BotChat_ComposeAssetPath(chatfile, "syn.c", asset_path, sizeof(asset_path));
-    if (!BotChat_LoadSynonyms(state, asset_path)) {
-        BotFreeChatFile(state);
-        return 0;
-    }
+	pc_script_t *script = PS_CreateScriptFromSource(source);
+	if (script == NULL)
+	{
+		BotLib_Print(PRT_ERROR, "BotLoadChatFile: script wrapper failed for %s\n", chatfile);
+		PC_FreeSource(source);
+		BotChat_PrintLegacyDiagnostic(state,
+				PRT_ERROR,
+				fastchat_enabled,
+				"couldn't find chat %s in %s\n",
+				chatname,
+				chatfile);
+		return 0;
+	}
 
-    BotChat_ComposeAssetPath(chatfile, "match.c", asset_path, sizeof(asset_path));
-    if (!BotChat_LoadMatchTemplates(state, asset_path)) {
-        BotFreeChatFile(state);
-        return 0;
-    }
+	state->active_source = source;
+	state->active_script = script;
 
-    BotChat_ComposeAssetPath(chatfile, "rchat.c", asset_path, sizeof(asset_path));
-    if (!BotChat_LoadReplyChat(state, asset_path)) {
-        BotFreeChatFile(state);
-        return 0;
-    }
+	char asset_path[512];
 
-    strncpy(state->active_chatfile, chatfile, sizeof(state->active_chatfile) - 1);
-    state->active_chatfile[sizeof(state->active_chatfile) - 1] = '\0';
-    strncpy(state->active_chatname, chatname, sizeof(state->active_chatname) - 1);
-    state->active_chatname[sizeof(state->active_chatname) - 1] = '\0';
+	BotChat_ComposeAssetPath(chatfile, "syn.c", asset_path, sizeof(asset_path));
+	if (!BotChat_LoadSynonyms(state, asset_path))
+	{
+		BotFreeChatFile(state);
+		return 0;
+	}
 
-    BotLib_Print(PRT_MESSAGE,
-                 "BotLoadChatFile: loaded assets for %s (%s)\n",
-                 state->active_chatfile,
-                 state->active_chatname);
-    return 1;
+	BotChat_ComposeAssetPath(chatfile, "match.c", asset_path, sizeof(asset_path));
+	if (!BotChat_LoadMatchTemplates(state, asset_path))
+	{
+		BotFreeChatFile(state);
+		return 0;
+	}
+
+	BotChat_ComposeAssetPath(chatfile, "rchat.c", asset_path, sizeof(asset_path));
+	if (!BotChat_LoadReplyChat(state, asset_path))
+	{
+		BotFreeChatFile(state);
+		return 0;
+	}
+
+	strncpy(state->active_chatfile, chatfile, sizeof(state->active_chatfile) - 1);
+	state->active_chatfile[sizeof(state->active_chatfile) - 1] = '\0';
+	strncpy(state->active_chatname, chatname, sizeof(state->active_chatname) - 1);
+	state->active_chatname[sizeof(state->active_chatname) - 1] = '\0';
+
+	BotLib_Print(PRT_MESSAGE,
+			"BotLoadChatFile: loaded assets for %s (%s)\n",
+			state->active_chatfile,
+			state->active_chatname);
+	return 1;
 }
 
 static void BotConstructChatMessage(bot_chatstate_t *state,
