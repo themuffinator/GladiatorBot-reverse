@@ -7,6 +7,9 @@
 #include "botlib/precomp/l_precomp.h"
 #include "botlib/precomp/l_script.h"
 
+extern void BotLib_TestResetLastMessage(void);
+extern const char *BotLib_TestGetLastMessage(void);
+
 static void drain_console(bot_chatstate_t *chat) {
     int type = 0;
     char buffer[256];
@@ -45,6 +48,64 @@ static void test_reply_chat_falls_back_to_reply_table(void) {
     assert(BotNextConsoleMessage(chat, &type, buffer, sizeof(buffer)));
     assert(type == 5);
     assert(BotChat_HasReplyTemplate(chat, 5, buffer));
+
+    BotFreeChatState(chat);
+}
+
+static void test_enter_chat_enqueues_message(void) {
+    bot_chatstate_t *chat = BotAllocChatState();
+    assert(chat != NULL);
+    assert(BotLoadChatFile(chat, BOT_ASSET_ROOT "/match.c", "match"));
+
+    drain_console(chat);
+    BotChat_SetContextCooldown(chat, 2, 0.0);
+    BotEnterChat(chat, 0, 0);
+
+    int type = 0;
+    char buffer[256];
+    assert(BotNextConsoleMessage(chat, &type, buffer, sizeof(buffer)));
+    assert(type == 2);
+    assert(strcmp(buffer, "{NETNAME} entered the game") == 0);
+
+    BotFreeChatState(chat);
+}
+
+static void test_enter_chat_cooldown_blocks_repeated_messages(void) {
+    bot_chatstate_t *chat = BotAllocChatState();
+    assert(chat != NULL);
+    assert(BotLoadChatFile(chat, BOT_ASSET_ROOT "/match.c", "match"));
+
+    drain_console(chat);
+    BotChat_SetContextCooldown(chat, 2, 5.0);
+    BotChat_SetTime(chat, 1.0);
+    BotEnterChat(chat, 0, 0);
+
+    int type = 0;
+    char buffer[256];
+    assert(BotNextConsoleMessage(chat, &type, buffer, sizeof(buffer)));
+    assert(type == 2);
+    assert(strcmp(buffer, "{NETNAME} entered the game") == 0);
+
+    BotChat_SetTime(chat, 2.0);
+    BotEnterChat(chat, 0, 0);
+
+    assert(BotNextConsoleMessage(chat, &type, buffer, sizeof(buffer)));
+    assert(type == 2);
+    assert(strcmp(buffer, "context 2 blocked by cooldown (4.00s remaining)\n") == 0);
+
+    BotFreeChatState(chat);
+}
+
+static void test_reply_chat_logs_missing_contexts(void) {
+    bot_chatstate_t *chat = BotAllocChatState();
+    assert(chat != NULL);
+    assert(BotLoadChatFile(chat, BOT_ASSET_ROOT "/rchat.c", "reply"));
+
+    drain_console(chat);
+    BotLib_TestResetLastMessage();
+    assert(!BotReplyChat(chat, "unit-test", 9999));
+    assert(strcmp(BotLib_TestGetLastMessage(), "no rchats\n") == 0);
+    assert(BotNumConsoleMessages(chat) == 0);
 
     BotFreeChatState(chat);
 }
@@ -119,6 +180,9 @@ int main(void) {
     test_synonym_lookup_contains_nearbyitem_entries();
     test_known_template_is_registered();
     test_include_path_too_long_is_rejected();
+    test_enter_chat_enqueues_message();
+    test_enter_chat_cooldown_blocks_repeated_messages();
+    test_reply_chat_logs_missing_contexts();
 
     printf("bot_chat_tests: all checks passed\n");
     return 0;
