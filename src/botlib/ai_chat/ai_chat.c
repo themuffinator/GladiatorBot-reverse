@@ -112,6 +112,7 @@ struct bot_chatstate_s {
     size_t match_context_count;
 
     bot_reply_table_t replies;
+    int has_reply_chats;
 };
 
 static void BotChat_ResetConsoleQueue(bot_chatstate_t *state)
@@ -208,6 +209,7 @@ static void BotChat_FreeReplies(bot_chatstate_t *state)
     state->replies.rules = NULL;
     state->replies.rule_count = 0;
     state->replies.rule_capacity = 0;
+    state->has_reply_chats = 0;
 }
 
 static void BotChat_ClearMetadata(bot_chatstate_t *state)
@@ -513,706 +515,515 @@ static size_t BotChat_SelectIndex(const char *seed, size_t count)
     }
     return (size_t)(hash % count);
 }
+/*
+=============
+BotChat_SkipBalancedBlock
 
-static void BotChat_ComposeAssetPath(const char *chatfile,
-                                     const char *filename,
-                                     char *buffer,
-                                     size_t buffer_size)
+Advances the script until the provided closing punctuation balances the opening
+character. Returns 1 on success and 0 when EOF is reached first.
+=============
+*/
+static int BotChat_SkipBalancedBlock(pc_script_t *script, char open, char close)
 {
-    if (buffer_size == 0) {
-        return;
-    }
-    buffer[0] = '\0';
-    if (chatfile == NULL || filename == NULL) {
-        return;
-    }
-
-    const char *last_slash = strrchr(chatfile, '/');
-#ifdef _WIN32
-    const char *last_backslash = strrchr(chatfile, '\\');
-    if (last_backslash != NULL && (last_slash == NULL || last_backslash > last_slash)) {
-        last_slash = last_backslash;
-    }
-#endif
-
-    size_t directory_length = 0;
-    if (last_slash != NULL) {
-        directory_length = (size_t)(last_slash - chatfile);
-    }
-
-    if (directory_length >= buffer_size) {
-        directory_length = buffer_size - 1;
-    }
-
-    memcpy(buffer, chatfile, directory_length);
-    buffer[directory_length] = '\0';
-
-    if (directory_length > 0 && directory_length + 1 < buffer_size) {
-        buffer[directory_length] = '/';
-        buffer[directory_length + 1] = '\0';
-        ++directory_length;
-    }
-
-    strncat(buffer, filename, buffer_size - strlen(buffer) - 1);
+	pc_token_t token;
+	int depth = 1;
+	while (PS_ReadToken(script, &token))
+	{
+		if (token.type != TT_PUNCTUATION || token.string[0] == '\0')
+		{
+			continue;
+		}
+		if (token.string[0] == open)
+		{
+			depth++;
+			continue;
+		}
+		if (token.string[0] == close)
+		{
+			if (--depth == 0)
+			{
+				return 1;
+			}
+		}
+	}
+	return 0;
 }
 
-static char *BotChat_ReadFile(const char *path, size_t *size_out)
+/*
+=============
+BotChat_ParseSynonymGroup
+
+Parses a single synonym group within a CONTEXT_* block.
+=============
+*/
+static int BotChat_ParseSynonymGroup(bot_synonym_context_t *context, pc_script_t *script)
 {
-    FILE *handle = fopen(path, "rb");
-    if (handle == NULL) {
-        return NULL;
-    }
+	bot_synonym_group_t *group = BotChat_AddSynonymGroup(context);
+	if (group == NULL)
+	{
+		return 0;
+	}
 
-    if (fseek(handle, 0, SEEK_END) != 0) {
-        fclose(handle);
-        return NULL;
-    }
+	while (1)
+	{
+		if (PS_CheckTokenString(script, "]"))
+		{
+			return 1;
+		}
+		if (!PS_ExpectTokenString(script, "("))
+		{
+			return 0;
+		}
+		pc_token_t token;
+		if (!PS_ExpectTokenType(script, TT_STRING, 0, &token))
+		{
+			return 0;
+		}
+		char *phrase_text = BotChat_StringDuplicate(token.string);
+		if (phrase_text == NULL)
+		{
+			return 0;
+		}
+		if (!PS_ExpectTokenString(script, ","))
+		{
+			free(phrase_text);
+			return 0;
+		}
+		if (!PS_ExpectTokenType(script, TT_NUMBER, 0, &token))
+		{
+			free(phrase_text);
+			return 0;
+		}
+		float weight = token.floatvalue;
+		if (!PS_ExpectTokenString(script, ")"))
+		{
+			free(phrase_text);
+			return 0;
+		}
 
-    long length = ftell(handle);
-    if (length < 0) {
-        fclose(handle);
-        return NULL;
-    }
-    if (fseek(handle, 0, SEEK_SET) != 0) {
-        fclose(handle);
-        return NULL;
-    }
+		bot_synonym_phrase_t *phrase = BotChat_AddSynonymPhrase(group);
+		if (phrase == NULL)
+		{
+			free(phrase_text);
+			return 0;
+		}
+		phrase->text = phrase_text;
+		phrase->weight = weight;
 
-    char *buffer = malloc((size_t)length + 1);
-    if (buffer == NULL) {
-        fclose(handle);
-        return NULL;
-    }
-
-    size_t read = fread(buffer, 1, (size_t)length, handle);
-    fclose(handle);
-    if (read != (size_t)length) {
-        free(buffer);
-        return NULL;
-    }
-
-    buffer[length] = '\0';
-    if (size_out != NULL) {
-        *size_out = (size_t)length;
-    }
-    return buffer;
+		if (PS_CheckTokenString(script, "]"))
+		{
+			return 1;
+		}
+		if (!PS_ExpectTokenString(script, ","))
+		{
+			return 0;
+		}
+	}
 }
 
-static void BotChat_SkipWhitespace(const char **cursor)
+/*
+=============
+BotChat_ParseSynonymContexts
+
+Walks the active script once to collect CONTEXT_* blocks.
+=============
+*/
+static int BotChat_ParseSynonymContexts(bot_chatstate_t *state)
 {
-    const char *p = *cursor;
-    while (*p != '\0') {
-        if (isspace((unsigned char)*p)) {
-            ++p;
-            continue;
-        }
-        if (p[0] == '/' && p[1] == '/') {
-            p += 2;
-            while (*p != '\0' && *p != '\n') {
-                ++p;
-            }
-            continue;
-        }
-        if (p[0] == '#' ) {
-            while (*p != '\0' && *p != '\n') {
-                ++p;
-            }
-            continue;
-        }
-        break;
-    }
-    *cursor = p;
+	if (state == NULL || state->active_script == NULL)
+	{
+		return 0;
+	}
+
+	ResetScript(state->active_script);
+	pc_token_t token;
+	while (PS_ReadToken(state->active_script, &token))
+	{
+		if (token.type != TT_NAME || strncmp(token.string, "CONTEXT_", 8) != 0)
+		{
+			continue;
+		}
+		if (!PS_ExpectTokenString(state->active_script, "{"))
+		{
+			return 0;
+		}
+		bot_synonym_context_t *context = BotChat_AddSynonymContext(state, token.string);
+		if (context == NULL)
+		{
+			return 0;
+		}
+		while (1)
+		{
+			if (PS_CheckTokenString(state->active_script, "}"))
+			{
+				break;
+			}
+			if (!PS_ReadToken(state->active_script, &token))
+			{
+				return 0;
+			}
+			if (token.type == TT_PUNCTUATION && token.string[0] == '[')
+			{
+				if (!BotChat_ParseSynonymGroup(context, state->active_script))
+				{
+					return 0;
+				}
+			}
+		}
+	}
+	return 1;
 }
 
-static char *BotChat_ParseString(const char **cursor)
+/*
+=============
+BotChat_TrimBuilderWhitespace
+
+Removes trailing spaces from the builder contents.
+=============
+*/
+static void BotChat_TrimBuilderWhitespace(bot_string_builder_t *builder)
 {
-    const char *p = *cursor;
-    if (*p != '"') {
-        return NULL;
-    }
-    ++p;
-    const char *start = p;
-    size_t length = 0;
-    char *buffer = NULL;
-    size_t capacity = 0;
-
-    while (*p != '\0') {
-        if (*p == '\\') {
-            if (buffer == NULL) {
-                capacity = 32;
-                buffer = malloc(capacity);
-                if (buffer == NULL) {
-                    return NULL;
-                }
-            }
-            if (length + 1 >= capacity) {
-                capacity *= 2;
-                char *resized = realloc(buffer, capacity);
-                if (resized == NULL) {
-                    free(buffer);
-                    return NULL;
-                }
-                buffer = resized;
-            }
-            ++p;
-            if (*p == '\0') {
-                break;
-            }
-            char value = *p;
-            if (value == 'n') {
-                value = '\n';
-            } else if (value == 't') {
-                value = '\t';
-            }
-            buffer[length++] = value;
-            ++p;
-            continue;
-        }
-        if (*p == '"') {
-            break;
-        }
-        if (buffer == NULL) {
-            ++p;
-            continue;
-        }
-        if (length + 1 >= capacity) {
-            capacity *= 2;
-            char *resized = realloc(buffer, capacity);
-            if (resized == NULL) {
-                free(buffer);
-                return NULL;
-            }
-            buffer = resized;
-        }
-        buffer[length++] = *p;
-        ++p;
-    }
-
-    if (*p != '"') {
-        free(buffer);
-        return NULL;
-    }
-
-    char *result;
-    if (buffer == NULL) {
-        size_t span = (size_t)(p - start);
-        result = malloc(span + 1);
-        if (result == NULL) {
-            return NULL;
-        }
-        memcpy(result, start, span);
-        result[span] = '\0';
-    } else {
-        result = realloc(buffer, length + 1);
-        if (result == NULL) {
-            free(buffer);
-            return NULL;
-        }
-        result[length] = '\0';
-    }
-
-    ++p;
-    *cursor = p;
-    return result;
+	while (builder->length > 0 && builder->buffer[builder->length - 1] == ' ')
+	{
+		builder->buffer[--builder->length] = '\0';
+	}
 }
 
-static int BotChat_ParseFloat(const char **cursor, float *value)
+/*
+=============
+BotChat_ParseMatchTemplate
+
+Extracts the template left-hand side and registers it under the message type.
+=============
+*/
+static int BotChat_ParseMatchTemplate(bot_chatstate_t *state, pc_script_t *script)
 {
-    char *endptr = NULL;
-    double parsed = strtod(*cursor, &endptr);
-    if (endptr == *cursor) {
-        return 0;
-    }
-    *value = (float)parsed;
-    *cursor = endptr;
-    return 1;
+	bot_string_builder_t builder = {0};
+	pc_token_t token;
+	while (PS_ReadToken(script, &token))
+	{
+		if (token.type == TT_PUNCTUATION && token.string[0] == '=')
+		{
+			break;
+		}
+		if (token.type == TT_PUNCTUATION && token.string[0] == ',')
+		{
+			if (!BotChat_StringBuilderAppendChar(&builder, ' '))
+			{
+				BotChat_StringBuilderDestroy(&builder);
+				return 0;
+			}
+			continue;
+		}
+		if (token.type == TT_STRING)
+		{
+			if (!BotChat_StringBuilderAppend(&builder, token.string)
+				|| !BotChat_StringBuilderAppendChar(&builder, ' '))
+			{
+				BotChat_StringBuilderDestroy(&builder);
+				return 0;
+			}
+			continue;
+		}
+		if (token.type == TT_NAME)
+		{
+			if (!BotChat_StringBuilderAppendIdentifier(&builder, token.string, strlen(token.string))
+				|| !BotChat_StringBuilderAppendChar(&builder, ' '))
+			{
+				BotChat_StringBuilderDestroy(&builder);
+				return 0;
+			}
+			continue;
+		}
+		if (token.type == TT_NUMBER)
+		{
+			if (!BotChat_StringBuilderAppend(&builder, token.string)
+				|| !BotChat_StringBuilderAppendChar(&builder, ' '))
+			{
+				BotChat_StringBuilderDestroy(&builder);
+				return 0;
+			}
+			continue;
+		}
+	}
+	if (token.type != TT_PUNCTUATION || token.string[0] != '=')
+	{
+		BotChat_StringBuilderDestroy(&builder);
+		return 0;
+	}
+	if (!PS_ExpectTokenString(script, "("))
+	{
+		BotChat_StringBuilderDestroy(&builder);
+		return 0;
+	}
+	pc_token_t type_token;
+	if (!PS_ExpectTokenType(script, TT_NAME, 0, &type_token))
+	{
+		BotChat_StringBuilderDestroy(&builder);
+		return 0;
+	}
+	unsigned long message_type = BotChat_MessageTypeFromIdentifier(type_token.string, strlen(type_token.string));
+	if (message_type == 0)
+	{
+		BotChat_StringBuilderDestroy(&builder);
+		return 0;
+	}
+	while (PS_ReadToken(script, &type_token))
+	{
+		if (type_token.type == TT_PUNCTUATION && type_token.string[0] == ';')
+		{
+			break;
+		}
+	}
+	if (type_token.type != TT_PUNCTUATION || type_token.string[0] != ';')
+	{
+		BotChat_StringBuilderDestroy(&builder);
+		return 0;
+	}
+	if (builder.buffer == NULL || builder.length == 0)
+	{
+		BotChat_StringBuilderDestroy(&builder);
+		return 1;
+	}
+	BotChat_TrimBuilderWhitespace(&builder);
+	char *template_text = BotChat_StringBuilderDetach(&builder);
+	BotChat_StringBuilderDestroy(&builder);
+	if (template_text == NULL)
+	{
+		return 0;
+	}
+	bot_match_context_t *context = BotChat_FindMatchContext(state, message_type);
+	if (context == NULL)
+	{
+		context = BotChat_AddMatchContext(state, message_type);
+		if (context == NULL)
+		{
+			free(template_text);
+			return 0;
+		}
+	}
+	char **slot = BotChat_AddTemplate(context);
+	if (slot == NULL)
+	{
+		free(template_text);
+		return 0;
+	}
+	*slot = template_text;
+	return 1;
 }
 
-static int BotChat_LoadSynonyms(bot_chatstate_t *state, const char *path)
+/*
+=============
+BotChat_ParseMatchBlock
+
+Iterates over the statements inside an MTCONTEXT_* block.
+=============
+*/
+static int BotChat_ParseMatchBlock(bot_chatstate_t *state, pc_script_t *script)
 {
-    size_t buffer_size = 0;
-    char *buffer = BotChat_ReadFile(path, &buffer_size);
-    if (buffer == NULL) {
-        BotLib_Print(PRT_ERROR, "BotLoadChatFile: failed to read synonym file %s\n", path);
-        return 0;
-    }
-
-    const char *cursor = buffer;
-#define BOTCHAT_SYN_FAIL(msg)                                                                  \
-    do {                                                                                       \
-        BotLib_Print(PRT_ERROR,                                                                \
-                     "BotChat_LoadSynonyms: %s near offset %ld in %s\n",                       \
-                     msg,                                                                      \
-                     (long)(cursor - buffer),                                                  \
-                     path);                                                                    \
-        free(buffer);                                                                          \
-        return 0;                                                                              \
-    } while (0)
-    while (1) {
-        BotChat_SkipWhitespace(&cursor);
-        if (*cursor == '\0') {
-            break;
-        }
-
-        if (strncmp(cursor, "CONTEXT_", 8) != 0) {
-            while (*cursor != '\0' && *cursor != '\n') {
-                ++cursor;
-            }
-            continue;
-        }
-
-        const char *name_start = cursor;
-        while (*cursor != '\0' && !isspace((unsigned char)*cursor) && *cursor != '{') {
-            ++cursor;
-        }
-        size_t name_length = (size_t)(cursor - name_start);
-        char context_name[128];
-        if (name_length >= sizeof(context_name)) {
-            name_length = sizeof(context_name) - 1;
-        }
-        memcpy(context_name, name_start, name_length);
-        context_name[name_length] = '\0';
-
-        BotChat_SkipWhitespace(&cursor);
-        if (*cursor != '{') {
-            BOTCHAT_SYN_FAIL("expected '{'");
-        }
-        ++cursor;
-
-        bot_synonym_context_t *context = BotChat_AddSynonymContext(state, context_name);
-        if (context == NULL) {
-            BOTCHAT_SYN_FAIL("context allocation failed");
-        }
-
-        while (1) {
-            BotChat_SkipWhitespace(&cursor);
-            if (*cursor == '}') {
-                ++cursor;
-                break;
-            }
-            if (*cursor == '\0') {
-                BOTCHAT_SYN_FAIL("unexpected end of file");
-            }
-            if (*cursor != '[') {
-                while (*cursor != '\0' && *cursor != '\n') {
-                    ++cursor;
-                }
-                continue;
-            }
-
-            ++cursor;
-            bot_synonym_group_t *group = BotChat_AddSynonymGroup(context);
-            if (group == NULL) {
-                BOTCHAT_SYN_FAIL("group allocation failed");
-            }
-
-            while (1) {
-                BotChat_SkipWhitespace(&cursor);
-                if (*cursor == ']') {
-                    ++cursor;
-                    break;
-                }
-                if (*cursor == '\0') {
-                    BOTCHAT_SYN_FAIL("unexpected end of group");
-                }
-                if (*cursor != '(') {
-                    BOTCHAT_SYN_FAIL("expected '('");
-                }
-
-                ++cursor;
-                BotChat_SkipWhitespace(&cursor);
-                char *phrase_text = BotChat_ParseString(&cursor);
-                if (phrase_text == NULL) {
-                    BOTCHAT_SYN_FAIL("string parse failed");
-                }
-                BotChat_SkipWhitespace(&cursor);
-                if (*cursor != ',') {
-                    free(phrase_text);
-                    BOTCHAT_SYN_FAIL("expected ',' after string");
-                }
-                ++cursor;
-                BotChat_SkipWhitespace(&cursor);
-                float weight = 0.0f;
-                if (!BotChat_ParseFloat(&cursor, &weight)) {
-                    free(phrase_text);
-                    BOTCHAT_SYN_FAIL("weight parse failed");
-                }
-                BotChat_SkipWhitespace(&cursor);
-                if (*cursor != ')') {
-                    free(phrase_text);
-                    BOTCHAT_SYN_FAIL("expected ')'");
-                }
-                ++cursor;
-
-                bot_synonym_phrase_t *phrase = BotChat_AddSynonymPhrase(group);
-                if (phrase == NULL) {
-                    free(phrase_text);
-                    BOTCHAT_SYN_FAIL("phrase allocation failed");
-                }
-                phrase->text = phrase_text;
-                phrase->weight = weight;
-
-                BotChat_SkipWhitespace(&cursor);
-                if (*cursor == ',') {
-                    ++cursor;
-                    continue;
-                }
-            }
-        }
-    }
-
-#undef BOTCHAT_SYN_FAIL
-    free(buffer);
-    return 1;
+	pc_token_t token;
+	while (PS_ReadToken(script, &token))
+	{
+		if (token.type == TT_PUNCTUATION && token.string[0] == '}')
+		{
+			return 1;
+		}
+		PS_UnreadToken(script, &token);
+		if (!BotChat_ParseMatchTemplate(state, script))
+		{
+			return 0;
+		}
+	}
+	return 0;
 }
 
-static int BotChat_LoadMatchTemplates(bot_chatstate_t *state, const char *path)
+/*
+=============
+BotChat_ParseReplyTemplate
+
+Builds a single reply text entry from the token stream.
+=============
+*/
+static int BotChat_ParseReplyTemplate(bot_chatstate_t *state, bot_reply_rule_t *rule, pc_script_t *script)
 {
-    size_t buffer_size = 0;
-    char *buffer = BotChat_ReadFile(path, &buffer_size);
-    if (buffer == NULL) {
-        BotLib_Print(PRT_ERROR, "BotLoadChatFile: failed to read match file %s\n", path);
-        return 0;
-    }
-
-    const char *cursor = buffer;
-    while (*cursor != '\0') {
-        const char *line_start = cursor;
-        while (*cursor != '\0' && *cursor != '\n') {
-            ++cursor;
-        }
-        size_t line_length = (size_t)(cursor - line_start);
-        if (*cursor == '\n') {
-            ++cursor;
-        }
-
-        if (line_length == 0) {
-            continue;
-        }
-
-        char *line = malloc(line_length + 1);
-        if (line == NULL) {
-            free(buffer);
-            return 0;
-        }
-        memcpy(line, line_start, line_length);
-        line[line_length] = '\0';
-
-        char *comment = strstr(line, "//");
-        if (comment != NULL) {
-            *comment = '\0';
-        }
-
-        char *trim = line;
-        while (isspace((unsigned char)*trim)) {
-            ++trim;
-        }
-        if (*trim == '\0') {
-            free(line);
-            continue;
-        }
-
-        char *eq = strchr(trim, '=');
-        if (eq == NULL) {
-            free(line);
-            continue;
-        }
-
-        char *lhs_end = eq;
-        while (lhs_end > trim && isspace((unsigned char)lhs_end[-1])) {
-            --lhs_end;
-        }
-        *lhs_end = '\0';
-
-        const char *rhs = eq + 1;
-        while (isspace((unsigned char)*rhs)) {
-            ++rhs;
-        }
-        if (*rhs != '(') {
-            free(line);
-            continue;
-        }
-        ++rhs;
-        while (isspace((unsigned char)*rhs)) {
-            ++rhs;
-        }
-        const char *msg_start = rhs;
-        while (*rhs != '\0' && *rhs != ',' && !isspace((unsigned char)*rhs)) {
-            ++rhs;
-        }
-        size_t msg_length = (size_t)(rhs - msg_start);
-        unsigned long message_type = BotChat_MessageTypeFromIdentifier(msg_start, msg_length);
-        if (message_type == 0) {
-            free(line);
-            continue;
-        }
-
-        bot_match_context_t *context = BotChat_FindMatchContext(state, message_type);
-        if (context == NULL) {
-            context = BotChat_AddMatchContext(state, message_type);
-            if (context == NULL) {
-                free(line);
-                free(buffer);
-                return 0;
-            }
-        }
-
-        bot_string_builder_t builder = {0};
-        const char *lhs_cursor = trim;
-        while (*lhs_cursor != '\0') {
-            if (*lhs_cursor == ',') {
-                if (builder.length > 0 && builder.buffer[builder.length - 1] != ' ') {
-                    if (!BotChat_StringBuilderAppendChar(&builder, ' ')) {
-                        BotChat_StringBuilderDestroy(&builder);
-                        free(line);
-                        free(buffer);
-                        return 0;
-                    }
-                }
-                ++lhs_cursor;
-                continue;
-            }
-            if (isspace((unsigned char)*lhs_cursor)) {
-                ++lhs_cursor;
-                continue;
-            }
-            if (*lhs_cursor == '"') {
-                const char *literal_cursor = lhs_cursor;
-                char *literal = BotChat_ParseString(&literal_cursor);
-                if (literal == NULL) {
-                    BotChat_StringBuilderDestroy(&builder);
-                    free(line);
-                    free(buffer);
-                    return 0;
-                }
-                if (!BotChat_StringBuilderAppend(&builder, literal)) {
-                    free(literal);
-                    BotChat_StringBuilderDestroy(&builder);
-                    free(line);
-                    free(buffer);
-                    return 0;
-                }
-                free(literal);
-                lhs_cursor = literal_cursor;
-                if (builder.length > 0 && builder.buffer[builder.length - 1] != ' ') {
-                    if (!BotChat_StringBuilderAppendChar(&builder, ' ')) {
-                        BotChat_StringBuilderDestroy(&builder);
-                        free(line);
-                        free(buffer);
-                        return 0;
-                    }
-                }
-                continue;
-            }
-
-            const char *identifier_start = lhs_cursor;
-            while (*lhs_cursor != '\0' && (isalnum((unsigned char)*lhs_cursor) || *lhs_cursor == '_' || *lhs_cursor == '\'')) {
-                ++lhs_cursor;
-            }
-            size_t identifier_length = (size_t)(lhs_cursor - identifier_start);
-            if (identifier_length == 0) {
-                ++lhs_cursor;
-                continue;
-            }
-            if (!BotChat_StringBuilderAppendIdentifier(&builder, identifier_start, identifier_length)) {
-                BotChat_StringBuilderDestroy(&builder);
-                free(line);
-                free(buffer);
-                return 0;
-            }
-            if (builder.length > 0 && builder.buffer[builder.length - 1] != ' ') {
-                if (!BotChat_StringBuilderAppendChar(&builder, ' ')) {
-                    BotChat_StringBuilderDestroy(&builder);
-                    free(line);
-                    free(buffer);
-                    return 0;
-                }
-            }
-        }
-
-        while (builder.length > 0 && builder.buffer[builder.length - 1] == ' ') {
-            builder.buffer[--builder.length] = '\0';
-        }
-
-        char *template_text = BotChat_StringBuilderDetach(&builder);
-        BotChat_StringBuilderDestroy(&builder);
-        if (template_text == NULL) {
-            free(line);
-            free(buffer);
-            return 0;
-        }
-
-        char **slot = BotChat_AddTemplate(context);
-        if (slot == NULL) {
-            free(template_text);
-            free(line);
-            free(buffer);
-            return 0;
-        }
-        *slot = template_text;
-        free(line);
-    }
-
-    free(buffer);
-    return 1;
+	bot_string_builder_t builder = {0};
+	pc_token_t token;
+	while (PS_ReadToken(script, &token))
+	{
+		if (token.type == TT_PUNCTUATION)
+		{
+			if (token.string[0] == ';')
+			{
+				break;
+			}
+			if (token.string[0] == ',')
+			{
+				if (!BotChat_StringBuilderAppendChar(&builder, ' '))
+				{
+					BotChat_StringBuilderDestroy(&builder);
+					return 0;
+				}
+				continue;
+			}
+		}
+		if (token.type == TT_STRING)
+		{
+			if (!BotChat_StringBuilderAppend(&builder, token.string))
+			{
+				BotChat_StringBuilderDestroy(&builder);
+				return 0;
+			}
+			continue;
+		}
+		if (token.type == TT_NAME)
+		{
+			if (!BotChat_StringBuilderAppendIdentifier(&builder, token.string, strlen(token.string)))
+			{
+				BotChat_StringBuilderDestroy(&builder);
+				return 0;
+			}
+			continue;
+		}
+		if (token.type == TT_NUMBER)
+		{
+			if (!BotChat_StringBuilderAppend(&builder, token.string))
+			{
+				BotChat_StringBuilderDestroy(&builder);
+				return 0;
+			}
+			continue;
+		}
+	}
+	if (token.type != TT_PUNCTUATION || token.string[0] != ';')
+	{
+		BotChat_StringBuilderDestroy(&builder);
+		return 0;
+	}
+	char *reply_text = BotChat_StringBuilderDetach(&builder);
+	BotChat_StringBuilderDestroy(&builder);
+	if (reply_text == NULL)
+	{
+		return 0;
+	}
+	char **slot = BotChat_AddReply(rule);
+	if (slot == NULL)
+	{
+		free(reply_text);
+		return 0;
+	}
+	*slot = reply_text;
+	state->has_reply_chats = 1;
+	return 1;
 }
 
-static int BotChat_LoadReplyChat(bot_chatstate_t *state, const char *path)
+/*
+=============
+BotChat_ParseReplyBlock
+
+Registers a reply context and its associated templates.
+=============
+*/
+static int BotChat_ParseReplyBlock(bot_chatstate_t *state, pc_script_t *script)
 {
-    size_t buffer_size = 0;
-    char *buffer = BotChat_ReadFile(path, &buffer_size);
-    if (buffer == NULL) {
-        BotLib_Print(PRT_ERROR, "BotLoadChatFile: failed to read reply chat file %s\n", path);
-        return 0;
-    }
+	if (!BotChat_SkipBalancedBlock(script, '[', ']'))
+	{
+		return 0;
+	}
+	if (!PS_ExpectTokenString(script, "="))
+	{
+		return 0;
+	}
+	pc_token_t token;
+	if (!PS_ExpectTokenType(script, TT_NUMBER, 0, &token))
+	{
+		return 0;
+	}
+	unsigned long reply_context = (unsigned long)token.intvalue;
+	if (!PS_ExpectTokenString(script, "{"))
+	{
+		return 0;
+	}
+	bot_reply_rule_t *rule = BotChat_FindReplyRule(state, reply_context);
+	if (rule == NULL)
+	{
+		rule = BotChat_AddReplyRule(state, reply_context);
+		if (rule == NULL)
+		{
+			return 0;
+		}
+	}
+	while (1)
+	{
+		if (PS_CheckTokenString(script, "}"))
+		{
+			break;
+		}
+		if (!BotChat_ParseReplyTemplate(state, rule, script))
+		{
+			return 0;
+		}
+	}
+	return 1;
+}
 
-    const char *cursor = buffer;
-#define BOTCHAT_REPLY_FAIL(msg)                                                               \
-    do {                                                                                      \
-        BotLib_Print(PRT_ERROR,                                                               \
-                     "BotChat_LoadReplyChat: %s near offset %ld in %s\n",                      \
-                     msg,                                                                     \
-                     (long)(cursor - buffer),                                                 \
-                     path);                                                                   \
-        free(buffer);                                                                         \
-        return 0;                                                                             \
-    } while (0)
-    while (1) {
-        BotChat_SkipWhitespace(&cursor);
-        if (*cursor == '\0') {
-            break;
-        }
+/*
+=============
+BotChat_ParseMatchAndReplyPass
 
-        if (*cursor != '[') {
-            while (*cursor != '\0' && *cursor != '\n') {
-                ++cursor;
-            }
-            continue;
-        }
+Second parsing pass that walks match blocks and reply definitions.
+=============
+*/
+static int BotChat_ParseMatchAndReplyPass(bot_chatstate_t *state)
+{
+	if (state == NULL || state->active_script == NULL)
+	{
+		return 0;
+	}
+	ResetScript(state->active_script);
+	pc_token_t token;
+	while (PS_ReadToken(state->active_script, &token))
+	{
+		if (token.type == TT_NAME && strncmp(token.string, "MTCONTEXT_", 10) == 0)
+		{
+			if (!PS_ExpectTokenString(state->active_script, "{"))
+			{
+				return 0;
+			}
+			if (!BotChat_ParseMatchBlock(state, state->active_script))
+			{
+				return 0;
+			}
+			continue;
+		}
+		if (token.type == TT_PUNCTUATION && token.string[0] == '[')
+		{
+			if (!BotChat_ParseReplyBlock(state, state->active_script))
+			{
+				return 0;
+			}
+		}
+	}
+	return 1;
+}
 
-        ++cursor;
-        // Skip synonym descriptors for now. They are retained in the string
-        // templates when we build the replies below, which is sufficient for
-        // test coverage.
-        while (*cursor != '\0' && *cursor != ']') {
-            if (*cursor == '"') {
-                const char *string_cursor = cursor;
-                char *ignored = BotChat_ParseString(&string_cursor);
-                free(ignored);
-                cursor = string_cursor;
-                continue;
-            }
-            ++cursor;
-        }
-        if (*cursor != ']') {
-            BOTCHAT_REPLY_FAIL("unterminated trigger list");
-        }
-        ++cursor;
+/*
+=============
+BotChat_ParseActiveScript
 
-        BotChat_SkipWhitespace(&cursor);
-        if (*cursor != '=') {
-            BOTCHAT_REPLY_FAIL("expected '=' after triggers");
-        }
-        ++cursor;
-        BotChat_SkipWhitespace(&cursor);
-
-        char *endptr = NULL;
-        unsigned long reply_context = strtoul(cursor, &endptr, 10);
-        if (endptr == cursor) {
-            BOTCHAT_REPLY_FAIL("context parse failed");
-        }
-        cursor = endptr;
-        BotChat_SkipWhitespace(&cursor);
-        if (*cursor != '{') {
-            while (*cursor != '\0' && *cursor != '\n') {
-                ++cursor;
-            }
-            continue;
-        }
-        ++cursor;
-
-        bot_reply_rule_t *rule = BotChat_FindReplyRule(state, reply_context);
-        if (rule == NULL) {
-            rule = BotChat_AddReplyRule(state, reply_context);
-            if (rule == NULL) {
-                BOTCHAT_REPLY_FAIL("rule allocation failed");
-            }
-        }
-
-        while (1) {
-            BotChat_SkipWhitespace(&cursor);
-            if (*cursor == '}') {
-                ++cursor;
-                break;
-            }
-            if (*cursor == '\0') {
-                BOTCHAT_REPLY_FAIL("unexpected end of reply block");
-            }
-
-            bot_string_builder_t builder = {0};
-            while (*cursor != '\0' && *cursor != ';') {
-                if (isspace((unsigned char)*cursor)) {
-                    ++cursor;
-                    continue;
-                }
-                if (*cursor == '"') {
-                    const char *literal_cursor = cursor;
-                    char *literal = BotChat_ParseString(&literal_cursor);
-                    if (literal == NULL) {
-                        BotChat_StringBuilderDestroy(&builder);
-                        BOTCHAT_REPLY_FAIL("string parse failed");
-                    }
-                    if (!BotChat_StringBuilderAppend(&builder, literal)) {
-                        free(literal);
-                        BotChat_StringBuilderDestroy(&builder);
-                        BOTCHAT_REPLY_FAIL("append literal failed");
-                    }
-                    free(literal);
-                    cursor = literal_cursor;
-                    continue;
-                }
-                const char *identifier_start = cursor;
-                while (*cursor != '\0' && *cursor != ';' && *cursor != '"' && !isspace((unsigned char)*cursor) && *cursor != ',') {
-                    ++cursor;
-                }
-                size_t identifier_length = (size_t)(cursor - identifier_start);
-                if (identifier_length > 0) {
-                    if (!BotChat_StringBuilderAppendIdentifier(&builder, identifier_start, identifier_length)) {
-                        BotChat_StringBuilderDestroy(&builder);
-                        BOTCHAT_REPLY_FAIL("append identifier failed");
-                    }
-                }
-                if (*cursor == ',') {
-                    if (!BotChat_StringBuilderAppendChar(&builder, ' ')) {
-                        BotChat_StringBuilderDestroy(&builder);
-                        BOTCHAT_REPLY_FAIL("append separator failed");
-                    }
-                    ++cursor;
-                }
-            }
-
-            if (*cursor == ';') {
-                ++cursor;
-            }
-
-            char *reply_text = BotChat_StringBuilderDetach(&builder);
-            BotChat_StringBuilderDestroy(&builder);
-            if (reply_text == NULL) {
-                BOTCHAT_REPLY_FAIL("reply detach failed");
-            }
-
-            char **slot = BotChat_AddReply(rule);
-            if (slot == NULL) {
-                free(reply_text);
-                BOTCHAT_REPLY_FAIL("reply allocation failed");
-            }
-            *slot = reply_text;
-        }
-    }
-
-    free(buffer);
-#undef BOTCHAT_REPLY_FAIL
-    return 1;
+Runs the two parsing passes required to populate the chat state.
+=============
+*/
+static int BotChat_ParseActiveScript(bot_chatstate_t *state)
+{
+	if (!BotChat_ParseSynonymContexts(state))
+	{
+		return 0;
+	}
+	if (!BotChat_ParseMatchAndReplyPass(state))
+	{
+		return 0;
+	}
+	return 1;
 }
 
 bot_chatstate_t *BotAllocChatState(void)
@@ -1299,25 +1110,14 @@ int BotLoadChatFile(bot_chatstate_t *state, const char *chatfile, const char *ch
 	state->active_source = source;
 	state->active_script = script;
 
-	char asset_path[512];
-
-	BotChat_ComposeAssetPath(chatfile, "syn.c", asset_path, sizeof(asset_path));
-	if (!BotChat_LoadSynonyms(state, asset_path))
+	if (!BotChat_ParseActiveScript(state))
 	{
-		BotFreeChatFile(state);
-		return 0;
-	}
-
-	BotChat_ComposeAssetPath(chatfile, "match.c", asset_path, sizeof(asset_path));
-	if (!BotChat_LoadMatchTemplates(state, asset_path))
-	{
-		BotFreeChatFile(state);
-		return 0;
-	}
-
-	BotChat_ComposeAssetPath(chatfile, "rchat.c", asset_path, sizeof(asset_path));
-	if (!BotChat_LoadReplyChat(state, asset_path))
-	{
+		BotChat_PrintLegacyDiagnostic(state,
+			PRT_ERROR,
+			fastchat_enabled,
+			"couldn't load chat %s from %s\n",
+			chatname,
+			chatfile);
 		BotFreeChatFile(state);
 		return 0;
 	}
@@ -1326,6 +1126,11 @@ int BotLoadChatFile(bot_chatstate_t *state, const char *chatfile, const char *ch
 	state->active_chatfile[sizeof(state->active_chatfile) - 1] = '\0';
 	strncpy(state->active_chatname, chatname, sizeof(state->active_chatname) - 1);
 	state->active_chatname[sizeof(state->active_chatname) - 1] = '\0';
+
+	if (!state->has_reply_chats)
+	{
+		BotLib_Print(PRT_MESSAGE, "no rchats\n");
+	}
 
 	BotLib_Print(PRT_MESSAGE,
 			"BotLoadChatFile: loaded assets for %s (%s)\n",
@@ -1466,6 +1271,9 @@ void BotEnterChat(bot_chatstate_t *state, int client, int sendto)
 int BotReplyChat(bot_chatstate_t *state, const char *message, unsigned long int context)
 {
     if (state == NULL || message == NULL) {
+        return 0;
+    }
+    if (!state->has_reply_chats) {
         return 0;
     }
 
