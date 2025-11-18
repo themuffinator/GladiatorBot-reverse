@@ -44,6 +44,20 @@ typedef struct bridge_import_mock_s
     int command_client;
     char *last_command;
 
+    int add_command_calls;
+    char last_add_command[64];
+    void (*last_add_command_callback)(void);
+
+    int remove_command_calls;
+    char last_remove_command[64];
+
+    int cmd_argc_calls;
+    int cmd_argc_return_value;
+
+    int cmd_argv_calls;
+    int cmd_argv_last_index;
+    char cmd_argv_return[64];
+
     int trace_calls;
 
     int memory_alloc_calls;
@@ -102,6 +116,17 @@ static void BridgeMock_Reset(bridge_import_mock_t *mock)
     mock->error_calls = 0;
     mock->last_error[0] = '\0';
     mock->cvar_calls = 0;
+    mock->add_command_calls = 0;
+    mock->last_add_command[0] = '\0';
+    mock->last_add_command_callback = NULL;
+    mock->remove_command_calls = 0;
+    mock->last_remove_command[0] = '\0';
+    mock->cmd_argc_calls = 0;
+    mock->cmd_argc_return_value = 0;
+    mock->cmd_argv_calls = 0;
+    mock->cmd_argv_last_index = -1;
+    strncpy(mock->cmd_argv_return, "arg", sizeof(mock->cmd_argv_return) - 1U);
+    mock->cmd_argv_return[sizeof(mock->cmd_argv_return) - 1U] = '\0';
 }
 
 static void BridgeMock_RecordPrint(int severity, const char *message)
@@ -215,6 +240,100 @@ static void Mock_BotClientCommand(int client, char *fmt, ...)
     memcpy(mock->last_command, buffer, length + 1U);
     mock->command_calls += 1;
     mock->command_client = client;
+}
+
+/*
+=============
+Mock_AddCommand
+
+Records console command registrations.
+=============
+*/
+static void Mock_AddCommand(const char *name, void (*function)(void))
+{
+    if (g_active_bridge_mock == NULL)
+    {
+        return;
+    }
+
+    bridge_import_mock_t *mock = g_active_bridge_mock;
+    mock->add_command_calls += 1;
+    if (name != NULL)
+    {
+        strncpy(mock->last_add_command, name, sizeof(mock->last_add_command) - 1U);
+        mock->last_add_command[sizeof(mock->last_add_command) - 1U] = '\0';
+    }
+    else
+    {
+        mock->last_add_command[0] = '\0';
+    }
+    mock->last_add_command_callback = function;
+}
+
+/*
+=============
+Mock_RemoveCommand
+
+Records console command deregistrations.
+=============
+*/
+static void Mock_RemoveCommand(const char *name)
+{
+    if (g_active_bridge_mock == NULL)
+    {
+        return;
+    }
+
+    bridge_import_mock_t *mock = g_active_bridge_mock;
+    mock->remove_command_calls += 1;
+    if (name != NULL)
+    {
+        strncpy(mock->last_remove_command, name, sizeof(mock->last_remove_command) - 1U);
+        mock->last_remove_command[sizeof(mock->last_remove_command) - 1U] = '\0';
+    }
+    else
+    {
+        mock->last_remove_command[0] = '\0';
+    }
+}
+
+/*
+=============
+Mock_CmdArgc
+
+Provides the mocked argument count.
+=============
+*/
+static int Mock_CmdArgc(void)
+{
+    if (g_active_bridge_mock == NULL)
+    {
+        return 0;
+    }
+
+    bridge_import_mock_t *mock = g_active_bridge_mock;
+    mock->cmd_argc_calls += 1;
+    return mock->cmd_argc_return_value;
+}
+
+/*
+=============
+Mock_CmdArgv
+
+Provides the mocked argument token.
+=============
+*/
+static const char *Mock_CmdArgv(int index)
+{
+    if (g_active_bridge_mock == NULL)
+    {
+        return NULL;
+    }
+
+    bridge_import_mock_t *mock = g_active_bridge_mock;
+    mock->cmd_argv_calls += 1;
+    mock->cmd_argv_last_index = index;
+    return mock->cmd_argv_return;
 }
 
 static bsp_trace_t Mock_Trace(vec3_t start,
@@ -335,6 +454,17 @@ libvar_t *Bridge_MaxClients(void)
     return &g_bridge_mock_maxclients;
 }
 
+/*
+=============
+BridgeTest_CommandStub
+
+No-op console command for registration tests.
+=============
+*/
+static void BridgeTest_CommandStub(void)
+{
+}
+
 static int bridge_test_setup(void **state)
 {
     bridge_test_context_t *context = (bridge_test_context_t *)calloc(1, sizeof(*context));
@@ -355,6 +485,10 @@ static int bridge_test_setup(void **state)
     context->mock.table.DebugLineCreate = Mock_DebugLineCreate;
     context->mock.table.DebugLineDelete = Mock_DebugLineDelete;
     context->mock.table.DebugLineShow = Mock_DebugLineShow;
+    context->mock.table.AddCommand = Mock_AddCommand;
+    context->mock.table.RemoveCommand = Mock_RemoveCommand;
+    context->mock.table.CmdArgc = Mock_CmdArgc;
+    context->mock.table.CmdArgv = Mock_CmdArgv;
 
     strncpy(g_bridge_mock_maxclients_name,
             "maxclients",
@@ -574,6 +708,126 @@ static void test_bridge_debug_line_toggle(void **state)
     Q2Bridge_SetDebugLinesEnabled(false);
 }
 
+/*
+=============
+test_bridge_add_command_validates_inputs
+=============
+*/
+static void test_bridge_add_command_validates_inputs(void **state)
+{
+    bridge_test_context_t *context = (bridge_test_context_t *)*state;
+    BridgeMock_Reset(&context->mock);
+
+    Q2_AddCommand("bot_test", BridgeTest_CommandStub);
+    assert_int_equal(context->mock.add_command_calls, 1);
+    assert_string_equal(context->mock.last_add_command, "bot_test");
+    assert_ptr_equal(context->mock.last_add_command_callback, BridgeTest_CommandStub);
+
+    BridgeMock_Reset(&context->mock);
+    Q2_AddCommand(NULL, BridgeTest_CommandStub);
+    assert_int_equal(context->mock.add_command_calls, 0);
+    assert_true(context->mock.print_count > 0);
+    assert_string_equal(context->mock.prints[0].message,
+                        "[q2bridge] AddCommand: invalid command name\n");
+
+    BridgeMock_Reset(&context->mock);
+    Q2_AddCommand("bot_test", NULL);
+    assert_int_equal(context->mock.add_command_calls, 0);
+    assert_true(context->mock.print_count > 0);
+    assert_string_equal(context->mock.prints[0].message,
+                        "[q2bridge] AddCommand: missing callback for \"bot_test\"\n");
+
+    BridgeMock_Reset(&context->mock);
+    context->mock.table.AddCommand = NULL;
+    Q2_AddCommand("bot_test", BridgeTest_CommandStub);
+    assert_int_equal(context->mock.add_command_calls, 0);
+    assert_true(context->mock.print_count > 0);
+    assert_string_equal(context->mock.prints[0].message,
+                        "[q2bridge] AddCommand: import not available\n");
+    context->mock.table.AddCommand = Mock_AddCommand;
+}
+
+/*
+=============
+test_bridge_remove_command_validates_inputs
+=============
+*/
+static void test_bridge_remove_command_validates_inputs(void **state)
+{
+    bridge_test_context_t *context = (bridge_test_context_t *)*state;
+    BridgeMock_Reset(&context->mock);
+
+    Q2_RemoveCommand("bot_test");
+    assert_int_equal(context->mock.remove_command_calls, 1);
+    assert_string_equal(context->mock.last_remove_command, "bot_test");
+
+    BridgeMock_Reset(&context->mock);
+    Q2_RemoveCommand(NULL);
+    assert_int_equal(context->mock.remove_command_calls, 0);
+    assert_true(context->mock.print_count > 0);
+    assert_string_equal(context->mock.prints[0].message,
+                        "[q2bridge] RemoveCommand: invalid command name\n");
+
+    BridgeMock_Reset(&context->mock);
+    context->mock.table.RemoveCommand = NULL;
+    Q2_RemoveCommand("bot_test");
+    assert_int_equal(context->mock.remove_command_calls, 0);
+    assert_true(context->mock.print_count > 0);
+    assert_string_equal(context->mock.prints[0].message,
+                        "[q2bridge] RemoveCommand: import not available\n");
+    context->mock.table.RemoveCommand = Mock_RemoveCommand;
+}
+
+/*
+=============
+test_bridge_cmd_arg_wrappers
+=============
+*/
+static void test_bridge_cmd_arg_wrappers(void **state)
+{
+    bridge_test_context_t *context = (bridge_test_context_t *)*state;
+    BridgeMock_Reset(&context->mock);
+
+    context->mock.cmd_argc_return_value = 5;
+    int argc = Q2_CmdArgc();
+    assert_int_equal(argc, 5);
+    assert_int_equal(context->mock.cmd_argc_calls, 1);
+
+    BridgeMock_Reset(&context->mock);
+    context->mock.table.CmdArgc = NULL;
+    int missing_argc = Q2_CmdArgc();
+    assert_int_equal(missing_argc, 0);
+    assert_true(context->mock.print_count > 0);
+    assert_string_equal(context->mock.prints[0].message,
+                        "[q2bridge] CmdArgc: import not available\n");
+    context->mock.table.CmdArgc = Mock_CmdArgc;
+
+    BridgeMock_Reset(&context->mock);
+    strncpy(context->mock.cmd_argv_return, "goal", sizeof(context->mock.cmd_argv_return) - 1U);
+    context->mock.cmd_argv_return[sizeof(context->mock.cmd_argv_return) - 1U] = '\0';
+    const char *arg = Q2_CmdArgv(2);
+    assert_non_null(arg);
+    assert_string_equal(arg, context->mock.cmd_argv_return);
+    assert_int_equal(context->mock.cmd_argv_calls, 1);
+    assert_int_equal(context->mock.cmd_argv_last_index, 2);
+
+    BridgeMock_Reset(&context->mock);
+    const char *negative = Q2_CmdArgv(-1);
+    assert_null(negative);
+    assert_true(context->mock.print_count > 0);
+    assert_string_equal(context->mock.prints[0].message,
+                        "[q2bridge] CmdArgv: invalid index -1\n");
+
+    BridgeMock_Reset(&context->mock);
+    context->mock.table.CmdArgv = NULL;
+    const char *missing_arg = Q2_CmdArgv(0);
+    assert_null(missing_arg);
+    assert_true(context->mock.print_count > 0);
+    assert_string_equal(context->mock.prints[0].message,
+                        "[q2bridge] CmdArgv: import not available\n");
+    context->mock.table.CmdArgv = Mock_CmdArgv;
+}
+
 int main(void)
 {
     const struct CMUnitTest tests[] = {
@@ -596,6 +850,15 @@ int main(void)
                                         bridge_test_setup,
                                         bridge_test_teardown),
         cmocka_unit_test_setup_teardown(test_bridge_debug_line_toggle,
+                                        bridge_test_setup,
+                                        bridge_test_teardown),
+        cmocka_unit_test_setup_teardown(test_bridge_add_command_validates_inputs,
+                                        bridge_test_setup,
+                                        bridge_test_teardown),
+        cmocka_unit_test_setup_teardown(test_bridge_remove_command_validates_inputs,
+                                        bridge_test_setup,
+                                        bridge_test_teardown),
+        cmocka_unit_test_setup_teardown(test_bridge_cmd_arg_wrappers,
                                         bridge_test_setup,
                                         bridge_test_teardown),
     };
