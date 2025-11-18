@@ -436,3 +436,103 @@ void Q2_DebugLineShow(int line, vec3_t start, vec3_t end, int color)
 
     imports->DebugLineShow(line, start, end, color);
 }
+
+/*
+=============
+Q2_AddCommand
+
+Registers a console command callback through the Quake II import table.
+=============
+*/
+void Q2_AddCommand(const char *name, void (*callback)(void))
+{
+	bot_import_t *imports = Q2Bridge_GetImportsInternal();
+	if (imports == NULL || imports->AddCommand == NULL)
+	{
+		Q2_Print(PRT_WARNING, "[q2bridge] AddCommand: import not available\n");
+		return;
+	}
+
+	if (name == NULL || *name == '\0')
+	{
+		Q2_Print(PRT_ERROR, "[q2bridge] AddCommand: invalid command name\n");
+		return;
+	}
+
+	if (callback == NULL)
+	{
+		Q2_Print(PRT_ERROR, "[q2bridge] AddCommand: missing callback for \"%s\"\n", name);
+		return;
+	}
+
+	imports->AddCommand(name, callback);
+}
+
+/*
+=============
+Q2_RemoveCommand
+
+Removes a console command callback via the Quake II import table.
+=============
+*/
+void Q2_RemoveCommand(const char *name)
+{
+	bot_import_t *imports = Q2Bridge_GetImportsInternal();
+	if (imports == NULL || imports->RemoveCommand == NULL)
+	{
+		Q2_Print(PRT_WARNING, "[q2bridge] RemoveCommand: import not available\n");
+		return;
+	}
+
+	if (name == NULL || *name == '\0')
+	{
+		Q2_Print(PRT_ERROR, "[q2bridge] RemoveCommand: invalid command name\n");
+		return;
+	}
+
+	imports->RemoveCommand(name);
+}
+
+/*
+=============
+Q2_CmdArgc
+
+Reads the engine-provided command argument count.
+=============
+*/
+int Q2_CmdArgc(void)
+{
+	bot_import_t *imports = Q2Bridge_GetImportsInternal();
+	if (imports == NULL || imports->CmdArgc == NULL)
+	{
+		Q2_Print(PRT_WARNING, "[q2bridge] CmdArgc: import not available\n");
+		return 0;
+	}
+
+	return imports->CmdArgc();
+}
+
+/*
+=============
+Q2_CmdArgv
+
+Reads an individual engine command argument.
+=============
+*/
+const char *Q2_CmdArgv(int index)
+{
+	if (index < 0)
+	{
+		Q2_Print(PRT_ERROR, "[q2bridge] CmdArgv: invalid index %d\n", index);
+		return NULL;
+	}
+
+	bot_import_t *imports = Q2Bridge_GetImportsInternal();
+	if (imports == NULL || imports->CmdArgv == NULL)
+	{
+		Q2_Print(PRT_WARNING, "[q2bridge] CmdArgv: import not available\n");
+		return NULL;
+	}
+
+	return imports->CmdArgv(index);
+}

@@ -45,6 +45,10 @@ void Q2_FreeMemory(void *ptr);
 int Q2_DebugLineCreate(void);
 void Q2_DebugLineDelete(int line);
 void Q2_DebugLineShow(int line, vec3_t start, vec3_t end, int color);
+void Q2_AddCommand(const char *name, void (*callback)(void));
+void Q2_RemoveCommand(const char *name);
+int Q2_CmdArgc(void);
+const char *Q2_CmdArgv(int index);
 void Q2Bridge_SetDebugLinesEnabled(bool enabled);
 bool Q2Bridge_DebugLinesEnabled(void);
 
