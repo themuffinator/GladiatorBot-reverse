@@ -177,6 +177,10 @@ pc_script_t *PS_CreateScriptFromSource(pc_source_t *source);
 // Destroys a script wrapper created by PS_CreateScriptFromSource.
 void PS_FreeScript(pc_script_t *script);
 
+#ifdef BOTLIB_TEST_INJECT_SCRIPT_CREATE_FAILURE
+void PS_TestForceCreateFailure(int enable);
+#endif
+
 // Reads the next token from the script wrapper.  Internally this proxies to
 // PC_ReadToken and copies the result into script->token for later access.
 int PS_ReadToken(pc_script_t *script, pc_token_t *token);

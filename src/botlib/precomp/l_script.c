@@ -47,6 +47,22 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 
 typedef enum { qfalse = 0, qtrue = 1 } qboolean;
 
+#ifdef BOTLIB_TEST_INJECT_SCRIPT_CREATE_FAILURE
+static int g_force_ps_create_failure = 0;
+
+/*
+=============
+PS_TestForceCreateFailure
+
+Allows unit tests to force the next PS_CreateScriptFromSource call to fail.
+=============
+*/
+void PS_TestForceCreateFailure(int enable)
+{
+	g_force_ps_create_failure = enable ? 1 : 0;
+}
+#endif
+
 #ifndef QDECL
 #define QDECL
 #endif
@@ -168,12 +184,20 @@ static void PS_SyncDiagnosticsFromSource(pc_script_t *script)
 
 pc_script_t *PS_CreateScriptFromSource(pc_source_t *source)
 {
-        if (source == NULL)
-        {
-                return NULL;
-        }
+	if (source == NULL)
+	{
+		return NULL;
+	}
 
-        pc_script_t *script = (pc_script_t *)calloc(1, sizeof(pc_script_t));
+#ifdef BOTLIB_TEST_INJECT_SCRIPT_CREATE_FAILURE
+	if (g_force_ps_create_failure)
+	{
+		g_force_ps_create_failure = 0;
+		return NULL;
+	}
+#endif
+
+pc_script_t *script = (pc_script_t *)calloc(1, sizeof(pc_script_t));
         if (script == NULL)
         {
                 BotLib_Print(PRT_FATAL, "PS_CreateScriptFromSource: out of memory\n");
