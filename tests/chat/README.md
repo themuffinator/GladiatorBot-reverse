@@ -22,7 +22,8 @@ feed the chat system.
   following files are required:
 - `dev_tools/assets/rchat.c` for reply-table coverage.
 - `dev_tools/assets/match.c` for join-context coverage.
-- `dev_tools/assets/unit_test_chat.c` for deterministic success/failure chat templates.
+- `dev_tools/assets/unit_test_chat.c` for deterministic success/failure chat templates and
+  random-string validation contexts.
 
 ## Test layout (`test_bot_chat.c`)
 
@@ -39,6 +40,8 @@ when finished so resource leaks are easy to spot. The existing coverage includes
 | `test_reply_chat_logs_missing_contexts` | Uses `BotLib_TestResetLastMessage` / `BotLib_TestGetLastMessage` from the stubs to ensure missing contexts are surfaced via `BotLib_Print` and the console queue remains empty. |
 | `test_synonym_lookup_contains_nearbyitem_entries` | Spot-checks that the synonym tables expose expected phrases. |
 | `test_known_template_is_registered` | Asserts the raw reply templates are registered once the file loads. |
+| `test_reply_chat_known_random_string_context_enqueues_message` | Confirms templates referencing built-in random string tables enqueue deterministic console entries. |
+| `test_reply_chat_unknown_random_string_context_logs_error` | Validates that unknown random string identifiers surface a `BotConstructChat` error and leave the console queue untouched. |
 | `test_include_path_too_long_is_rejected` | Bypasses the chat layer and exercises the precompiler diagnostics for oversized `#include` fragments. |
 
 A small helper, `drain_console`, clears any queued chat messages between steps so

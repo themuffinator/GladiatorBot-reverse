@@ -31,3 +31,13 @@ NETNAME, " triggered the deterministic join message" = (MSG_ENTERGAME, 0);
 "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",
 "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX";
 }
+
+["unit-test-random-valid"] = 9200
+{
+"Random string placeholder: \\rrandom_misc\\.";
+}
+
+["unit-test-random-invalid"] = 9201
+{
+"Random string placeholder: \\runit_test_missing\\.";
+}
