@@ -289,6 +289,49 @@ static void test_reply_chat_construct_message_paths(void) {
 
 /*
 =============
+test_reply_chat_known_random_string_context_enqueues_message
+=============
+*/
+static void test_reply_chat_known_random_string_context_enqueues_message(void) {
+	bot_chatstate_t *chat = BotAllocChatState();
+	assert(chat != NULL);
+	assert(BotLoadChatFile(chat, BOT_ASSET_ROOT "/unit_test_chat.c", "unit_random_valid"));
+
+	drain_console(chat);
+	assert(BotReplyChat(chat, "unit-test", 9200));
+
+	int type = 0;
+	char buffer[256];
+	assert(BotNextConsoleMessage(chat, &type, buffer, sizeof(buffer)));
+	assert(type == 9200);
+	assert(strcmp(buffer, "Random string placeholder: \\rrandom_misc\\.") == 0);
+
+	BotFreeChatState(chat);
+}
+
+/*
+=============
+test_reply_chat_unknown_random_string_context_logs_error
+=============
+*/
+static void test_reply_chat_unknown_random_string_context_logs_error(void) {
+	bot_chatstate_t *chat = BotAllocChatState();
+	assert(chat != NULL);
+	assert(BotLoadChatFile(chat, BOT_ASSET_ROOT "/unit_test_chat.c", "unit_random_invalid"));
+
+	drain_console(chat);
+	BotLib_TestResetLastMessage();
+	assert(!BotReplyChat(chat, "unit-test", 9201));
+	assert(BotLib_TestGetLastMessageType() == PRT_ERROR);
+	assert(strstr(BotLib_TestGetLastMessage(),
+	"unknown random string unit_test_missing") != NULL);
+	assert(BotNumConsoleMessages(chat) == 0);
+
+	BotFreeChatState(chat);
+}
+
+/*
+=============
 test_synonym_lookup_contains_nearbyitem_entries
 =============
 */
@@ -427,6 +470,8 @@ int main(void) {
 	test_reply_chat_death_context();
 	test_reply_chat_falls_back_to_reply_table();
 	test_reply_chat_construct_message_paths();
+	test_reply_chat_known_random_string_context_enqueues_message();
+	test_reply_chat_unknown_random_string_context_logs_error();
 	test_synonym_lookup_contains_nearbyitem_entries();
 	test_known_template_is_registered();
 	test_include_path_too_long_is_rejected();
