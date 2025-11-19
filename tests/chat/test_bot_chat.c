@@ -42,6 +42,42 @@ static void drain_console(bot_chatstate_t *chat) {
 	}
 }
 
+typedef struct console_message_capture_s {
+	int type;
+	char text[256];
+} console_message_capture_t;
+
+static size_t capture_console_messages(bot_chatstate_t *chat,
+console_message_capture_t *messages,
+size_t max_messages) {
+	size_t captured = 0;
+	int type = 0;
+	char buffer[256];
+	while (captured < max_messages &&
+	BotNextConsoleMessage(chat, &type, buffer, sizeof(buffer))) {
+		console_message_capture_t *slot = &messages[captured];
+		slot->type = type;
+		strncpy(slot->text, buffer, sizeof(slot->text) - 1);
+		slot->text[sizeof(slot->text) - 1] = '\0';
+		++captured;
+	}
+	return captured;
+}
+
+static void assert_console_has_message(const console_message_capture_t *messages,
+size_t count,
+int expected_type,
+const char *expected_text) {
+	assert(expected_text != NULL);
+	for (size_t i = 0; i < count; ++i) {
+		if (messages[i].type == expected_type &&
+		strcmp(messages[i].text, expected_text) == 0) {
+			return;
+		}
+	}
+	assert(!"expected console message not found");
+}
+
 /*
 =============
 test_reply_chat_death_context
@@ -100,11 +136,12 @@ static void test_enter_chat_enqueues_message(void) {
 	BotChat_SetContextCooldown(chat, 2, 0.0);
 	BotEnterChat(chat, 0, 0);
 
-	int type = 0;
-	char buffer[256];
-	assert(BotNextConsoleMessage(chat, &type, buffer, sizeof(buffer)));
-	assert(type == 2);
-	assert(strcmp(buffer, "{NETNAME} entered the game") == 0);
+	console_message_capture_t messages[2];
+	size_t captured = capture_console_messages(chat, messages, 2);
+	assert_console_has_message(messages,
+	captured,
+	2,
+	"{NETNAME} entered the game");
 
 	BotFreeChatState(chat);
 }
@@ -124,19 +161,21 @@ static void test_enter_chat_cooldown_blocks_repeated_messages(void) {
 	BotChat_SetTime(chat, 1.0);
 	BotEnterChat(chat, 0, 0);
 
-	int type = 0;
-	char buffer[256];
-	assert(BotNextConsoleMessage(chat, &type, buffer, sizeof(buffer)));
-	assert(type == 2);
-	assert(strcmp(buffer, "{NETNAME} entered the game") == 0);
+	console_message_capture_t messages[2];
+	size_t captured = capture_console_messages(chat, messages, 2);
+	assert_console_has_message(messages,
+	captured,
+	2,
+	"{NETNAME} entered the game");
 
 	BotChat_SetTime(chat, 2.0);
 	BotEnterChat(chat, 0, 0);
 
-	assert(BotNextConsoleMessage(chat, &type, buffer, sizeof(buffer)));
-	assert(type == 2);
-	assert(strcmp(buffer,
-				  "context 2 blocked by cooldown (4.00s remaining)\n") == 0);
+	captured = capture_console_messages(chat, messages, 2);
+	assert_console_has_message(messages,
+	captured,
+	2,
+	"context 2 blocked by cooldown (4.00s remaining)\n");
 
 	BotFreeChatState(chat);
 }
@@ -160,16 +199,22 @@ static void test_reply_chat_logs_missing_contexts(void) {
 	assert(BotLib_TestGetLastMessageType() == PRT_MESSAGE);
 	assert(BotNumConsoleMessages(chat) == 2);
 
-	int type = 0;
-	char buffer[256];
-	assert(BotNextConsoleMessage(chat, &type, buffer, sizeof(buffer)));
-	assert(type == 1);
-	assert(BotChat_HasReplyTemplate(chat, 1, buffer));
-
-	assert(BotNextConsoleMessage(chat, &type, buffer, sizeof(buffer)));
-	assert(type == PRT_MESSAGE);
-	assert(strcmp(buffer, "no rchats\n") == 0);
-	assert(!BotNextConsoleMessage(chat, &type, buffer, sizeof(buffer)));
+	console_message_capture_t messages[4];
+	size_t captured = capture_console_messages(chat, messages, 4);
+	assert(captured == 2);
+	int reply_index = -1;
+	for (size_t i = 0; i < captured; ++i) {
+		if (messages[i].type == 1 &&
+		BotChat_HasReplyTemplate(chat, 1, messages[i].text)) {
+			reply_index = (int)i;
+			break;
+		}
+	}
+	assert(reply_index != -1);
+	assert_console_has_message(messages,
+	captured,
+	PRT_MESSAGE,
+	"no rchats\n");
 
 	BotFreeChatState(chat);
 }
@@ -186,7 +231,7 @@ static void test_synonym_lookup_contains_nearbyitem_entries(void) {
 
 	assert(BotChat_HasSynonymPhrase(chat, "CONTEXT_NEARBYITEM", "Quad Damage"));
 	assert(BotChat_HasSynonymPhrase(chat, "CONTEXT_NEARBYITEM",
-									"Rocket Launcher"));
+	"Rocket Launcher"));
 
 	BotFreeChatState(chat);
 }
@@ -215,7 +260,7 @@ static void test_include_path_too_long_is_rejected(void) {
 	const size_t segment_length = 256;
 	const size_t segment_count = 5;
 	const size_t fragment_length =
-		segment_count * segment_length + (segment_count - 1);
+	segment_count * segment_length + (segment_count - 1);
 
 	char include_fragment[fragment_length + 1];
 	size_t offset = 0;
@@ -224,19 +269,19 @@ static void test_include_path_too_long_is_rejected(void) {
 			include_fragment[offset++] = '/';
 		}
 		memset(include_fragment + offset, (int)('a' + (int)segment),
-			   segment_length);
+		segment_length);
 		offset += segment_length;
 	}
 	include_fragment[offset] = '\0';
 
 	char script[sizeof(include_fragment) + 16];
 	int written =
-		snprintf(script, sizeof(script), "#include <%s>\n", include_fragment);
+	snprintf(script, sizeof(script), "#include <%s>\n", include_fragment);
 	assert(written > 0);
 	assert((size_t)written < sizeof(script));
 
 	pc_source_t *source =
-		PC_LoadSourceMemory("unit-test", script, (size_t)written);
+	PC_LoadSourceMemory("unit-test", script, (size_t)written);
 	assert(source != NULL);
 
 	pc_token_t token;
@@ -246,8 +291,8 @@ static void test_include_path_too_long_is_rejected(void) {
 	bool found_error = false;
 	while (diagnostic != NULL) {
 		if (diagnostic->level == PC_ERROR_LEVEL_ERROR &&
-			diagnostic->message != NULL &&
-			strstr(diagnostic->message, "path too long") != NULL) {
+		diagnostic->message != NULL &&
+		strstr(diagnostic->message, "path too long") != NULL) {
 			found_error = true;
 			break;
 		}
@@ -267,9 +312,11 @@ Ensures the mocked libvars gate chat loading and diagnostics correctly.
 */
 static void test_botloadchatfile_fastchat_nochat_combinations(void) {
 	const char *expected_message =
-		"couldn't load chat reply from " BOT_ASSET_ROOT "/rchat.c\n";
+	"couldn't load chat reply from " BOT_ASSET_ROOT "/rchat.c\n";
 	bot_chatstate_t *chat = BotAllocChatState();
 	assert(chat != NULL);
+	console_message_capture_t messages[2];
+	size_t captured = 0;
 
 	configure_chat_libvars(0.0f, 0.0f);
 	assert(BotLoadChatFile(chat, BOT_ASSET_ROOT "/rchat.c", "reply"));
@@ -281,6 +328,8 @@ static void test_botloadchatfile_fastchat_nochat_combinations(void) {
 	assert(BotLib_TestGetLastMessageType() == PRT_FATAL);
 	assert(strcmp(BotLib_TestGetLastMessage(), expected_message) == 0);
 	assert(BotNumConsoleMessages(chat) == 0);
+	captured = capture_console_messages(chat, messages, 2);
+	assert(captured == 0);
 
 	configure_chat_libvars(1.0f, 1.0f);
 	BotLib_TestResetLastMessage();
@@ -290,14 +339,73 @@ static void test_botloadchatfile_fastchat_nochat_combinations(void) {
 	assert(strcmp(BotLib_TestGetLastMessage(), expected_message) == 0);
 	assert(BotNumConsoleMessages(chat) == 1);
 
-	int type = 0;
-	char buffer[256];
-	assert(BotNextConsoleMessage(chat, &type, buffer, sizeof(buffer)));
-	assert(type == PRT_FATAL);
-	assert(strcmp(buffer, expected_message) == 0);
-	assert(!BotNextConsoleMessage(chat, &type, buffer, sizeof(buffer)));
+	captured = capture_console_messages(chat, messages, 2);
+	assert(captured == 1);
+	assert_console_has_message(messages,
+	captured,
+	PRT_FATAL,
+	expected_message);
 
 	configure_chat_libvars(0.0f, 0.0f);
+	BotFreeChatState(chat);
+}
+
+/*
+=============
+test_forced_script_failure_surfaces_not_found_diagnostic
+=============
+*/
+static void test_forced_script_failure_surfaces_not_found_diagnostic(void) {
+	const char *expected_message =
+	"couldn't find chat reply in " BOT_ASSET_ROOT "/rchat.c\n";
+	bot_chatstate_t *chat = BotAllocChatState();
+	assert(chat != NULL);
+
+	configure_chat_libvars(1.0f, 0.0f);
+	drain_console(chat);
+	BotLib_TestResetLastMessage();
+	BotChat_TestForceScriptWrapperFailure(1);
+	assert(!BotLoadChatFile(chat, BOT_ASSET_ROOT "/rchat.c", "reply"));
+	assert(BotLib_TestGetLastMessageType() == PRT_ERROR);
+	assert(strcmp(BotLib_TestGetLastMessage(), expected_message) == 0);
+
+	console_message_capture_t messages[2];
+	size_t captured = capture_console_messages(chat, messages, 2);
+	assert(captured == 1);
+	assert_console_has_message(messages,
+	captured,
+	PRT_ERROR,
+	expected_message);
+
+	BotChat_TestForceScriptWrapperFailure(0);
+	configure_chat_libvars(0.0f, 0.0f);
+	BotFreeChatState(chat);
+}
+
+/*
+=============
+test_botconstructchat_reports_unknown_random_string
+=============
+*/
+static void test_botconstructchat_reports_unknown_random_string(void) {
+	bot_chatstate_t *chat = BotAllocChatState();
+	assert(chat != NULL);
+
+	BotLib_TestResetLastMessage();
+	const char *invalid_template = "{NETNAME} triggers \\runknown\\ chaos";
+	assert(!BotChat_TestConstructMessage(chat, 7, invalid_template));
+	assert(BotLib_TestGetLastMessageType() == PRT_ERROR);
+	assert(strcmp(BotLib_TestGetLastMessage(),
+	"BotConstructChat: unknown random string unknown\n") == 0);
+
+	console_message_capture_t messages[1];
+	size_t captured = capture_console_messages(chat, messages, 1);
+	assert(captured == 1);
+	assert_console_has_message(messages,
+	captured,
+	PRT_ERROR,
+	"BotConstructChat: unknown random string unknown\n");
+
 	BotFreeChatState(chat);
 }
 
@@ -318,6 +426,8 @@ int main(void) {
 	test_enter_chat_cooldown_blocks_repeated_messages();
 	test_reply_chat_logs_missing_contexts();
 	test_botloadchatfile_fastchat_nochat_combinations();
+	test_forced_script_failure_surfaces_not_found_diagnostic();
+	test_botconstructchat_reports_unknown_random_string();
 
 	printf("bot_chat_tests: all checks passed\n");
 	return 0;

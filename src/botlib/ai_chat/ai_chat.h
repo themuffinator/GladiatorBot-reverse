@@ -83,6 +83,11 @@ int BotChat_HasSynonymPhrase(const bot_chatstate_t *state, const char *context_n
 /** Returns 1 when the reply table contains the provided template for the context. */
 int BotChat_HasReplyTemplate(const bot_chatstate_t *state, unsigned long int context, const char *template_text);
 
+#if defined(BOTLIB_CHAT_TESTS)
+void BotChat_TestForceScriptWrapperFailure(int enabled);
+int BotChat_TestConstructMessage(bot_chatstate_t *state, unsigned long context, const char *template_text);
+#endif
+
 #ifdef __cplusplus
 } // extern "C"
 #endif

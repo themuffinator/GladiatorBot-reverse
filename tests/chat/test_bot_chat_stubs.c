@@ -202,16 +202,6 @@ void *GetClearedMemory(size_t size)
 
 /*
 =============
-GetMemory
-=============
-*/
-void *GetMemory(size_t size)
-{
-	return malloc(size);
-}
-
-/*
-=============
 FreeMemory
 =============
 */

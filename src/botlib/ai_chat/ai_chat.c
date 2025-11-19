@@ -1,6 +1,7 @@
 #include "ai_chat.h"
 
 #include <ctype.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -14,59 +15,67 @@
 #define BOT_CHAT_MAX_MESSAGE_CHARS 256
 
 typedef struct bot_console_message_s {
-    int type;
-    char text[BOT_CHAT_MAX_MESSAGE_CHARS];
+	int type;
+	char text[BOT_CHAT_MAX_MESSAGE_CHARS];
 } bot_console_message_t;
 
 typedef struct {
-    char *text;
-    float weight;
+	char *text;
+	float weight;
 } bot_synonym_phrase_t;
 
 typedef struct {
-    bot_synonym_phrase_t *phrases;
-    size_t phrase_count;
-    size_t phrase_capacity;
+	bot_synonym_phrase_t *phrases;
+	size_t phrase_count;
+	size_t phrase_capacity;
 } bot_synonym_group_t;
 
 typedef struct {
-    char *context_name;
-    bot_synonym_group_t *groups;
-    size_t group_count;
-    size_t group_capacity;
+	char *context_name;
+	bot_synonym_group_t *groups;
+	size_t group_count;
+	size_t group_capacity;
 } bot_synonym_context_t;
 
 typedef struct {
-    unsigned long message_type;
-    char **templates;
-    size_t template_count;
-    size_t template_capacity;
+	unsigned long message_type;
+	char **templates;
+	size_t template_count;
+	size_t template_capacity;
 } bot_match_context_t;
 
 typedef struct {
-    unsigned long reply_context;
-    char **responses;
-    size_t response_count;
-    size_t response_capacity;
+	unsigned long reply_context;
+	char **responses;
+	size_t response_count;
+	size_t response_capacity;
 } bot_reply_rule_t;
 
 typedef struct {
-    bot_reply_rule_t *rules;
-    size_t rule_count;
-    size_t rule_capacity;
+	bot_reply_rule_t *rules;
+	size_t rule_count;
+	size_t rule_capacity;
 } bot_reply_table_t;
 
 typedef struct {
-    char *buffer;
-    size_t length;
-    size_t capacity;
+	char *buffer;
+	size_t length;
+	size_t capacity;
 } bot_string_builder_t;
 
 typedef struct {
-    unsigned long context;
-    double duration_seconds;
-    double next_allowed_time;
+	unsigned long context;
+	double duration_seconds;
+	double next_allowed_time;
 } bot_chat_cooldown_entry_t;
+
+#if defined(BOTLIB_CHAT_TESTS)
+static int g_botchat_force_script_wrapper_failure = 0;
+#endif
+
+static size_t BotChat_SelectIndex(const char *seed, size_t count);
+
+
 
 /*
 =============
@@ -75,57 +84,77 @@ BotChat_PrintLegacyDiagnostic
 Prints the legacy chat diagnostic and optionally queues it for fastchat tests.
 =============
 */
+static void BotChat_PrintFormattedDiagnostic(bot_chatstate_t *state,
+int priority,
+const char *format,
+...)
+{
+	if (format == NULL)
+	{
+		return;
+	}
+
+	char message[BOT_CHAT_MAX_MESSAGE_CHARS];
+	va_list args;
+	va_start(args, format);
+	int written = vsnprintf(message, sizeof(message), format, args);
+	va_end(args);
+	if (written < 0)
+	{
+		return;
+	}
+
+	BotLib_Print(priority, "%s", message);
+	if (state != NULL)
+	{
+		BotQueueConsoleMessage(state, priority, message);
+	}
+}
+
 static void BotChat_PrintLegacyDiagnostic(bot_chatstate_t *state,
-		int priority,
-		int fastchat_enabled,
-		const char *format,
-		const char *chatname,
-		const char *chatfile)
+int priority,
+int fastchat_enabled,
+const char *format,
+const char *chatname,
+const char *chatfile)
 {
 	if (format == NULL || chatname == NULL || chatfile == NULL)
 	{
 		return;
 	}
 
-	BotLib_Print(priority, format, chatname, chatfile);
 	if (!fastchat_enabled || state == NULL)
 	{
+		BotLib_Print(priority, format, chatname, chatfile);
 		return;
 	}
 
-	char message[BOT_CHAT_MAX_MESSAGE_CHARS];
-	int written = snprintf(message, sizeof(message), format, chatname, chatfile);
-	if (written < 0)
-	{
-		return;
-	}
-
-	BotQueueConsoleMessage(state, priority, message);
+	BotChat_PrintFormattedDiagnostic(state, priority, format, chatname, chatfile);
 }
 
 struct bot_chatstate_s {
-    pc_source_t *active_source;
-    pc_script_t *active_script;
-    char active_chatfile[128];
-    char active_chatname[64];
-    bot_console_message_t console_queue[BOT_CHAT_MAX_CONSOLE_MESSAGES];
-    size_t console_head;
-    size_t console_count;
+	pc_source_t *active_source;
+	pc_script_t *active_script;
+	char active_chatfile[128];
+	char active_chatname[64];
+	bot_console_message_t console_queue[BOT_CHAT_MAX_CONSOLE_MESSAGES];
+	size_t console_head;
+	size_t console_count;
 
-    bot_synonym_context_t *synonym_contexts;
-    size_t synonym_context_count;
+	bot_synonym_context_t *synonym_contexts;
+	size_t synonym_context_count;
 
-    bot_match_context_t *match_contexts;
-    size_t match_context_count;
+	bot_match_context_t *match_contexts;
+	size_t match_context_count;
 
-    bot_reply_table_t replies;
-    int has_reply_chats;
+	bot_reply_table_t replies;
+	int has_reply_chats;
 
-    bot_chat_cooldown_entry_t *cooldowns;
-    size_t cooldown_count;
-    size_t cooldown_capacity;
-    double time_override_seconds;
-    int has_time_override;
+	bot_chat_cooldown_entry_t *cooldowns;
+	size_t cooldown_count;
+	size_t cooldown_capacity;
+	double time_override_seconds;
+	int has_time_override;
 };
 
 /*
@@ -1259,11 +1288,11 @@ int BotLoadChatFile(bot_chatstate_t *state, const char *chatfile, const char *ch
 	if (LibVarValue("nochat", "0") != 0.0f)
 	{
 		BotChat_PrintLegacyDiagnostic(state,
-				PRT_FATAL,
-				fastchat_enabled,
-				"couldn't load chat %s from %s\n",
-				chatname,
-				chatfile);
+		PRT_FATAL,
+		fastchat_enabled,
+		"couldn't load chat %s from %s\n",
+		chatname,
+		chatfile);
 		return 0;
 	}
 
@@ -1273,13 +1302,28 @@ int BotLoadChatFile(bot_chatstate_t *state, const char *chatfile, const char *ch
 	if (source == NULL)
 	{
 		BotChat_PrintLegacyDiagnostic(state,
-				PRT_FATAL,
-				fastchat_enabled,
-				"couldn't load chat %s from %s\n",
-				chatname,
-				chatfile);
+		PRT_FATAL,
+		fastchat_enabled,
+		"couldn't load chat %s from %s\n",
+		chatname,
+		chatfile);
 		return 0;
 	}
+
+	#if defined(BOTLIB_CHAT_TESTS)
+	if (g_botchat_force_script_wrapper_failure)
+	{
+		BotLib_Print(PRT_ERROR, "BotLoadChatFile: script wrapper failed for %s\n", chatfile);
+		PC_FreeSource(source);
+		BotChat_PrintLegacyDiagnostic(state,
+		PRT_ERROR,
+		fastchat_enabled,
+		"couldn't find chat %s in %s\n",
+		chatname,
+		chatfile);
+		return 0;
+	}
+	#endif
 
 	pc_script_t *script = PS_CreateScriptFromSource(source);
 	if (script == NULL)
@@ -1287,11 +1331,11 @@ int BotLoadChatFile(bot_chatstate_t *state, const char *chatfile, const char *ch
 		BotLib_Print(PRT_ERROR, "BotLoadChatFile: script wrapper failed for %s\n", chatfile);
 		PC_FreeSource(source);
 		BotChat_PrintLegacyDiagnostic(state,
-				PRT_ERROR,
-				fastchat_enabled,
-				"couldn't find chat %s in %s\n",
-				chatname,
-				chatfile);
+		PRT_ERROR,
+		fastchat_enabled,
+		"couldn't find chat %s in %s\n",
+		chatname,
+		chatfile);
 		return 0;
 	}
 
@@ -1301,11 +1345,11 @@ int BotLoadChatFile(bot_chatstate_t *state, const char *chatfile, const char *ch
 	if (!BotChat_ParseActiveScript(state))
 	{
 		BotChat_PrintLegacyDiagnostic(state,
-			PRT_ERROR,
-			fastchat_enabled,
-			"couldn't load chat %s from %s\n",
-			chatname,
-			chatfile);
+		PRT_ERROR,
+		fastchat_enabled,
+		"couldn't load chat %s from %s\n",
+		chatname,
+		chatfile);
 		BotFreeChatFile(state);
 		return 0;
 	}
@@ -1321,9 +1365,9 @@ int BotLoadChatFile(bot_chatstate_t *state, const char *chatfile, const char *ch
 	}
 
 	BotLib_Print(PRT_MESSAGE,
-			"BotLoadChatFile: loaded assets for %s (%s)\n",
-			state->active_chatfile,
-			state->active_chatname);
+	"BotLoadChatFile: loaded assets for %s (%s)\n",
+	state->active_chatfile,
+	state->active_chatname);
 	return 1;
 }
 
@@ -1347,7 +1391,10 @@ const char *template_text)
 	const size_t template_length = strlen(template_text);
 	if (template_length > max_length)
 	{
-		BotLib_Print(PRT_ERROR, "BotConstructChat: message \"%s\" too long\n", template_text);
+		BotChat_PrintFormattedDiagnostic(state,
+		PRT_ERROR,
+		"BotConstructChat: message \"%s\" too long\n",
+		template_text);
 		return 0;
 	}
 
@@ -1360,7 +1407,10 @@ const char *template_text)
 		const char escape = template_text[i + 1];
 		if (escape == '\0')
 		{
-			BotLib_Print(PRT_ERROR, "BotConstructChat: message \"%s\" invalid escape char\n", template_text);
+			BotChat_PrintFormattedDiagnostic(state,
+			PRT_ERROR,
+			"BotConstructChat: message \"%s\" invalid escape char\n",
+			template_text);
 			return 0;
 		}
 		if (escape != 'r')
@@ -1375,13 +1425,19 @@ const char *template_text)
 		}
 		if (template_text[end] != '\\')
 		{
-			BotLib_Print(PRT_ERROR, "BotConstructChat: message \"%s\" invalid escape char\n", template_text);
+			BotChat_PrintFormattedDiagnostic(state,
+			PRT_ERROR,
+			"BotConstructChat: message \"%s\" invalid escape char\n",
+			template_text);
 			return 0;
 		}
 		size_t name_length = end - start;
 		if (name_length == 0)
 		{
-			BotLib_Print(PRT_ERROR, "BotConstructChat: unknown random string %s\n", "<empty>");
+			BotChat_PrintFormattedDiagnostic(state,
+			PRT_ERROR,
+			"BotConstructChat: unknown random string %s\n",
+			"<empty>");
 			return 0;
 		}
 		char random_name[64];
@@ -1393,7 +1449,10 @@ const char *template_text)
 		random_name[name_length] = '\0';
 		if (!BotChat_RandomStringKnown(random_name))
 		{
-			BotLib_Print(PRT_ERROR, "BotConstructChat: unknown random string %s\n", random_name);
+			BotChat_PrintFormattedDiagnostic(state,
+			PRT_ERROR,
+			"BotConstructChat: unknown random string %s\n",
+			random_name);
 			return 0;
 		}
 		i = end;
@@ -1683,27 +1742,39 @@ int BotChat_HasSynonymPhrase(const bot_chatstate_t *state, const char *context_n
 
 int BotChat_HasReplyTemplate(const bot_chatstate_t *state, unsigned long int context, const char *template_text)
 {
-    if (state == NULL || template_text == NULL) {
-        return 0;
-    }
+	if (state == NULL || template_text == NULL) {
+		return 0;
+	}
 
-    const bot_match_context_t *match = BotChat_FindMatchContext((bot_chatstate_t *)state, context);
-    if (match != NULL) {
-        for (size_t i = 0; i < match->template_count; ++i) {
-            if (match->templates[i] != NULL && strcmp(match->templates[i], template_text) == 0) {
-                return 1;
-            }
-        }
-    }
+	const bot_match_context_t *match = BotChat_FindMatchContext((bot_chatstate_t *)state, context);
+	if (match != NULL) {
+		for (size_t i = 0; i < match->template_count; ++i) {
+			if (match->templates[i] != NULL && strcmp(match->templates[i], template_text) == 0) {
+				return 1;
+			}
+		}
+	}
 
-    const bot_reply_rule_t *rule = BotChat_FindReplyRule((bot_chatstate_t *)state, context);
-    if (rule != NULL) {
-        for (size_t i = 0; i < rule->response_count; ++i) {
-            if (rule->responses[i] != NULL && strcmp(rule->responses[i], template_text) == 0) {
-                return 1;
-            }
-        }
-    }
+	const bot_reply_rule_t *rule = BotChat_FindReplyRule((bot_chatstate_t *)state, context);
+	if (rule != NULL) {
+		for (size_t i = 0; i < rule->response_count; ++i) {
+			if (rule->responses[i] != NULL && strcmp(rule->responses[i], template_text) == 0) {
+				return 1;
+			}
+		}
+	}
 
-    return 0;
+	return 0;
 }
+
+#if defined(BOTLIB_CHAT_TESTS)
+void BotChat_TestForceScriptWrapperFailure(int enabled)
+{
+	g_botchat_force_script_wrapper_failure = enabled;
+}
+
+int BotChat_TestConstructMessage(bot_chatstate_t *state, unsigned long context, const char *template_text)
+{
+	return BotConstructChatMessage(state, context, template_text);
+}
+#endif
