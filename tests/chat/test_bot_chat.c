@@ -14,6 +14,18 @@ extern int BotLib_TestGetLastMessageType(void);
 extern void BotLib_TestSetLibVar(const char *var_name, float value);
 extern void BotLib_TestResetLibVars(void);
 
+enum
+{
+	TEST_MAX_CONSOLE_MESSAGES = 32,
+	TEST_MAX_CONSOLE_TEXT = 256
+};
+
+typedef struct test_console_message_s
+{
+	int type;
+	char text[TEST_MAX_CONSOLE_TEXT];
+} test_console_message_t;
+
 /*
 =============
 configure_chat_libvars
@@ -35,11 +47,87 @@ Clears queued console messages for deterministic checks.
 =============
 */
 static void drain_console(bot_chatstate_t *chat) {
-	int type = 0;
-	char buffer[256];
-	while (BotNextConsoleMessage(chat, &type, buffer, sizeof(buffer))) {
-		(void)type;
+        int type = 0;
+        char buffer[256];
+        while (BotNextConsoleMessage(chat, &type, buffer, sizeof(buffer))) {
+                (void)type;
+        }
+}
+
+/*
+=============
+snapshot_console_queue
+
+Copies the pending console messages so tests can search without draining them.
+=============
+*/
+static size_t snapshot_console_queue(bot_chatstate_t *chat,
+	test_console_message_t *messages,
+	size_t capacity)
+{
+	size_t count = 0;
+	while (count < capacity)
+	{
+		int type = 0;
+		char buffer[TEST_MAX_CONSOLE_TEXT];
+		if (!BotNextConsoleMessage(chat, &type, buffer, sizeof(buffer)))
+		{
+			break;
+		}
+		messages[count].type = type;
+		strncpy(messages[count].text,
+			buffer,
+			sizeof(messages[count].text) - 1);
+		messages[count].text[sizeof(messages[count].text) - 1] = '\0';
+		++count;
 	}
+	return count;
+}
+
+/*
+=============
+restore_console_queue
+
+Pushes a snapshot back onto the FIFO for subsequent checks.
+=============
+*/
+static void restore_console_queue(bot_chatstate_t *chat,
+	const test_console_message_t *messages,
+	size_t count)
+{
+	for (size_t i = 0; i < count; ++i)
+	{
+		BotQueueConsoleMessage(chat, messages[i].type, messages[i].text);
+	}
+}
+
+/*
+=============
+assert_console_contains_message
+
+Ensures the console queue includes the requested diagnostic string.
+=============
+*/
+static void assert_console_contains_message(bot_chatstate_t *chat,
+	int expected_type,
+	const char *expected_text)
+{
+	test_console_message_t snapshot[TEST_MAX_CONSOLE_MESSAGES];
+	const size_t count = snapshot_console_queue(chat,
+		snapshot,
+		TEST_MAX_CONSOLE_MESSAGES);
+	int found = 0;
+	for (size_t i = 0; i < count; ++i)
+	{
+		if (snapshot[i].type == expected_type &&
+			strcmp(snapshot[i].text, expected_text) == 0)
+		{
+			found = 1;
+			break;
+		}
+	}
+	restore_console_queue(chat, snapshot, count);
+	assert(found);
 }
 
 /*
@@ -422,10 +510,10 @@ Ensures the mocked libvars gate chat loading and diagnostics correctly.
 =============
 */
 static void test_botloadchatfile_fastchat_nochat_combinations(void) {
-	const char *expected_message =
-		"couldn't load chat reply from " BOT_ASSET_ROOT "/rchat.c\n";
-	bot_chatstate_t *chat = BotAllocChatState();
-	assert(chat != NULL);
+const char *expected_message =
+"couldn't load chat reply from " BOT_ASSET_ROOT "/rchat.c\n";
+bot_chatstate_t *chat = BotAllocChatState();
+assert(chat != NULL);
 
 	configure_chat_libvars(0.0f, 0.0f);
 	assert(BotLoadChatFile(chat, BOT_ASSET_ROOT "/rchat.c", "reply"));
@@ -445,6 +533,7 @@ static void test_botloadchatfile_fastchat_nochat_combinations(void) {
 	assert(BotLib_TestGetLastMessageType() == PRT_FATAL);
 	assert(strcmp(BotLib_TestGetLastMessage(), expected_message) == 0);
 	assert(BotNumConsoleMessages(chat) == 1);
+	assert_console_contains_message(chat, PRT_FATAL, expected_message);
 
 	int type = 0;
 	char buffer[256];
@@ -452,6 +541,42 @@ static void test_botloadchatfile_fastchat_nochat_combinations(void) {
 	assert(type == PRT_FATAL);
 	assert(strcmp(buffer, expected_message) == 0);
 	assert(!BotNextConsoleMessage(chat, &type, buffer, sizeof(buffer)));
+
+	configure_chat_libvars(0.0f, 0.0f);
+	BotFreeChatState(chat);
+}
+
+/*
+=============
+test_botloadchatfile_reports_missing_chat_context
+
+Forces the script wrapper creation to fail so the legacy "couldn't find chat"
+diagnostic is enqueued when fastchat is enabled.
+=============
+*/
+static void test_botloadchatfile_reports_missing_chat_context(void)
+{
+	char expected_message[256];
+	const int written = snprintf(expected_message,
+		sizeof(expected_message),
+		"couldn't find chat %s in %s\n",
+		"reply",
+		BOT_ASSET_ROOT "/rchat.c");
+	assert(written > 0);
+	assert((size_t)written < sizeof(expected_message));
+
+	bot_chatstate_t *chat = BotAllocChatState();
+	assert(chat != NULL);
+
+	configure_chat_libvars(1.0f, 0.0f);
+	drain_console(chat);
+	BotLib_TestResetLastMessage();
+	PS_TestForceCreateFailure(1);
+	assert(!BotLoadChatFile(chat, BOT_ASSET_ROOT "/rchat.c", "reply"));
+	assert(BotLib_TestGetLastMessageType() == PRT_ERROR);
+	assert(strcmp(BotLib_TestGetLastMessage(), expected_message) == 0);
+	assert_console_contains_message(chat, PRT_ERROR, expected_message);
+	drain_console(chat);
 
 	configure_chat_libvars(0.0f, 0.0f);
 	BotFreeChatState(chat);
@@ -479,6 +604,7 @@ int main(void) {
 	test_enter_chat_cooldown_blocks_repeated_messages();
 	test_reply_chat_logs_missing_contexts();
 	test_botloadchatfile_fastchat_nochat_combinations();
+	test_botloadchatfile_reports_missing_chat_context();
 
 	printf("bot_chat_tests: all checks passed\n");
 	return 0;
