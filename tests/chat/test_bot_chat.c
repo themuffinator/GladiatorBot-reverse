@@ -153,9 +153,23 @@ static void test_reply_chat_logs_missing_contexts(void) {
 
 	drain_console(chat);
 	BotLib_TestResetLastMessage();
+
+	assert(BotReplyChat(chat, "unit-test", 1));
 	assert(!BotReplyChat(chat, "unit-test", 9999));
 	assert(strcmp(BotLib_TestGetLastMessage(), "no rchats\n") == 0);
-	assert(BotNumConsoleMessages(chat) == 0);
+	assert(BotLib_TestGetLastMessageType() == PRT_MESSAGE);
+	assert(BotNumConsoleMessages(chat) == 2);
+
+	int type = 0;
+	char buffer[256];
+	assert(BotNextConsoleMessage(chat, &type, buffer, sizeof(buffer)));
+	assert(type == 1);
+	assert(BotChat_HasReplyTemplate(chat, 1, buffer));
+
+	assert(BotNextConsoleMessage(chat, &type, buffer, sizeof(buffer)));
+	assert(type == PRT_MESSAGE);
+	assert(strcmp(buffer, "no rchats\n") == 0);
+	assert(!BotNextConsoleMessage(chat, &type, buffer, sizeof(buffer)));
 
 	BotFreeChatState(chat);
 }
@@ -274,6 +288,7 @@ static void test_botloadchatfile_fastchat_nochat_combinations(void) {
 	assert(!BotLoadChatFile(chat, BOT_ASSET_ROOT "/rchat.c", "reply"));
 	assert(BotLib_TestGetLastMessageType() == PRT_FATAL);
 	assert(strcmp(BotLib_TestGetLastMessage(), expected_message) == 0);
+	assert(BotNumConsoleMessages(chat) == 1);
 
 	int type = 0;
 	char buffer[256];
