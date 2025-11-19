@@ -44,6 +44,63 @@ static void drain_console(bot_chatstate_t *chat) {
 
 /*
 =============
+test_enter_chat_uses_unit_test_template
+=============
+*/
+static void test_enter_chat_uses_unit_test_template(void) {
+	bot_chatstate_t *chat = BotAllocChatState();
+	assert(chat != NULL);
+	assert(BotLoadChatFile(chat, BOT_ASSET_ROOT "/unit_test_chat.c", "unit_enter_valid"));
+
+	drain_console(chat);
+	BotChat_SetContextCooldown(chat, 2, 0.0);
+	BotEnterChat(chat, 0, 0);
+
+	int type = 0;
+	char buffer[256];
+	assert(BotNextConsoleMessage(chat, &type, buffer, sizeof(buffer)));
+	assert(type == 2);
+	assert(strcmp(buffer, "{NETNAME} triggered the deterministic join message") == 0);
+
+	BotFreeChatState(chat);
+}
+
+/*
+=============
+test_enter_chat_construct_message_failure_respects_cooldown_reset
+=============
+*/
+static void test_enter_chat_construct_message_failure_respects_cooldown_reset(void) {
+	bot_chatstate_t *chat = BotAllocChatState();
+	assert(chat != NULL);
+	assert(BotLoadChatFile(chat, BOT_ASSET_ROOT "/unit_test_chat.c", "unit_enter_invalid"));
+
+	drain_console(chat);
+	BotChat_SetContextCooldown(chat, 2, 1.0);
+	BotChat_SetTime(chat, 10.0);
+	BotLib_TestResetLastMessage();
+	BotEnterChat(chat, 0, 0);
+	assert(BotNumConsoleMessages(chat) == 0);
+	assert(BotLib_TestGetLastMessageType() == PRT_ERROR);
+	assert(strstr(BotLib_TestGetLastMessage(), "too long") != NULL);
+
+	BotEnterChat(chat, 0, 0);
+	int type = 0;
+	char buffer[256];
+	assert(BotNextConsoleMessage(chat, &type, buffer, sizeof(buffer)));
+	assert(type == 2);
+	assert(strstr(buffer, "blocked by cooldown") != NULL);
+
+	drain_console(chat);
+	BotChat_SetTime(chat, 12.0);
+	BotEnterChat(chat, 0, 0);
+	assert(BotNumConsoleMessages(chat) == 0);
+
+	BotFreeChatState(chat);
+}
+
+/*
+=============
 test_reply_chat_death_context
 =============
 */
@@ -136,10 +193,11 @@ static void test_enter_chat_cooldown_blocks_repeated_messages(void) {
 	assert(BotNextConsoleMessage(chat, &type, buffer, sizeof(buffer)));
 	assert(type == 2);
 	assert(strcmp(buffer,
-				  "context 2 blocked by cooldown (4.00s remaining)\n") == 0);
+			"context 2 blocked by cooldown (4.00s remaining)\n") == 0);
 
 	BotFreeChatState(chat);
 }
+
 
 /*
 =============
@@ -162,6 +220,61 @@ static void test_reply_chat_logs_missing_contexts(void) {
 
 /*
 =============
+test_reply_chat_construct_message_paths
+=============
+*/
+static void test_reply_chat_construct_message_paths(void) {
+	bot_chatstate_t *chat = BotAllocChatState();
+	assert(chat != NULL);
+	assert(BotLoadChatFile(chat, BOT_ASSET_ROOT "/unit_test_chat.c", "unit_reply"));
+
+	drain_console(chat);
+	BotChat_SetContextCooldown(chat, 9100, 1.0);
+	BotChat_SetTime(chat, 1.0);
+	assert(BotReplyChat(chat, "unit-test", 9100));
+
+	int type = 0;
+	char buffer[256];
+	assert(BotNextConsoleMessage(chat, &type, buffer, sizeof(buffer)));
+	assert(type == 9100);
+	assert(strcmp(buffer, "Unit test reply constructed successfully") == 0);
+
+	assert(!BotReplyChat(chat, "unit-test", 9100));
+	assert(BotNextConsoleMessage(chat, &type, buffer, sizeof(buffer)));
+	assert(type == 9100);
+	assert(strstr(buffer, "blocked by cooldown") != NULL);
+
+	drain_console(chat);
+	BotChat_SetTime(chat, 3.0);
+	assert(BotReplyChat(chat, "unit-test", 9100));
+	assert(BotNextConsoleMessage(chat, &type, buffer, sizeof(buffer)));
+	assert(type == 9100);
+	assert(strcmp(buffer, "Unit test reply constructed successfully") == 0);
+
+	drain_console(chat);
+	BotChat_SetContextCooldown(chat, 9101, 0.5);
+	BotChat_SetTime(chat, 4.0);
+	BotLib_TestResetLastMessage();
+	assert(!BotReplyChat(chat, "unit-test", 9101));
+	assert(BotNumConsoleMessages(chat) == 0);
+	assert(BotLib_TestGetLastMessageType() == PRT_ERROR);
+	assert(strstr(BotLib_TestGetLastMessage(), "too long") != NULL);
+
+	assert(!BotReplyChat(chat, "unit-test", 9101));
+	assert(BotNextConsoleMessage(chat, &type, buffer, sizeof(buffer)));
+	assert(type == 9101);
+	assert(strstr(buffer, "blocked by cooldown") != NULL);
+
+	drain_console(chat);
+	BotChat_SetTime(chat, 5.0);
+	assert(!BotReplyChat(chat, "unit-test", 9101));
+	assert(BotNumConsoleMessages(chat) == 0);
+
+	BotFreeChatState(chat);
+}
+
+/*
+=============
 test_synonym_lookup_contains_nearbyitem_entries
 =============
 */
@@ -172,7 +285,7 @@ static void test_synonym_lookup_contains_nearbyitem_entries(void) {
 
 	assert(BotChat_HasSynonymPhrase(chat, "CONTEXT_NEARBYITEM", "Quad Damage"));
 	assert(BotChat_HasSynonymPhrase(chat, "CONTEXT_NEARBYITEM",
-									"Rocket Launcher"));
+				"Rocket Launcher"));
 
 	BotFreeChatState(chat);
 }
@@ -294,8 +407,11 @@ main
 int main(void) {
 	configure_chat_libvars(0.0f, 0.0f);
 	test_include_path_too_long_is_rejected();
+	test_enter_chat_uses_unit_test_template();
+	test_enter_chat_construct_message_failure_respects_cooldown_reset();
 	test_reply_chat_death_context();
 	test_reply_chat_falls_back_to_reply_table();
+	test_reply_chat_construct_message_paths();
 	test_synonym_lookup_contains_nearbyitem_entries();
 	test_known_template_is_registered();
 	test_include_path_too_long_is_rejected();

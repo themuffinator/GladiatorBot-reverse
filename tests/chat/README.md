@@ -20,8 +20,9 @@ feed the chat system.
   `${PROJECT_SOURCE_DIR}/dev_tools/assets`. The tests must be executed from a
   checkout that includes the Gladiator assets under that path. At a minimum the
   following files are required:
-  - `dev_tools/assets/rchat.c` for reply-table coverage.
-  - `dev_tools/assets/match.c` for join-context coverage.
+- `dev_tools/assets/rchat.c` for reply-table coverage.
+- `dev_tools/assets/match.c` for join-context coverage.
+- `dev_tools/assets/unit_test_chat.c` for deterministic success/failure chat templates.
 
 ## Test layout (`test_bot_chat.c`)
 
