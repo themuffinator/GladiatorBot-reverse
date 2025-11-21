@@ -80,6 +80,17 @@ add_subdirectory(common)
 add_subdirectory(tools)
 add_subdirectory(bspc)
 
+add_test(
+    NAME parity_asset_verification
+    COMMAND ${PROJECT_SOURCE_DIR}/dev_tools/scripts/verify_parity_assets.sh
+)
+set_tests_properties(
+    parity_asset_verification
+    PROPERTIES
+        FIXTURES_SETUP parity_assets
+        LABELS "Parity"
+)
+
 if(Python3_Interpreter_FOUND)
     add_test(
         NAME headless_quake2_parity

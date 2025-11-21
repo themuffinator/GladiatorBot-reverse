@@ -92,6 +92,30 @@ that reachability records expose the travel times baked into the sample AAS
 file. If the files are missing the harness prints a skip reason so CI jobs that
 do not stage the optional assets continue to pass.
 
+### Parity asset checklist
+
+The cmocka parity suite depends on a small, reproducible asset pack staged
+under `GLADIATOR_ASSET_DIR` (defaults to
+`${PROJECT_SOURCE_DIR}/dev_tools/assets`). CTest now runs
+`dev_tools/scripts/verify_parity_assets.sh` before executing the parity
+fixtures. Missing assets cause the test run to fail with actionable
+instructions instead of silently skipping cases. Ensure the following paths are
+present:
+
+- `${GLADIATOR_ASSET_DIR}/maps/test_mover.bsp`
+- `${GLADIATOR_ASSET_DIR}/maps/test_mover.aas`
+- `${GLADIATOR_ASSET_DIR}/fw_items.c`
+- `${GLADIATOR_ASSET_DIR}/syn.c`
+- `${GLADIATOR_ASSET_DIR}/weapons.c`
+- `${GLADIATOR_ASSET_DIR}/default/defaul_w.c`
+- `${GLADIATOR_ASSET_DIR}/default/defaul_i.c`
+
+Set `GLADIATOR_ASSET_DIR` to point at your staged asset root when running the
+tests from a build directory that lives outside the repository checkout.
+`verify_parity_assets.sh` also reports any detected Quake II installation when
+`GLADIATOR_Q2_BASEDIR`/`GLADIATOR_Q2_DEDICATED_SERVER` are set so headless
+parity checks can be confirmed ahead of time.
+
 ### Bot interface parity mover fixtures
 
 The parity suite (`tests/parity/test_bot_interface.c`) includes
