@@ -169,40 +169,58 @@ void BotMemory_LogSummary(void) {
     BotMemory_Log(BOT_MEMORY_LOG_INFO, "total memory blocks: %d\n", g_memory_state.block_count);
 }
 
+/*
+=============
+GetMemory
+
+Allocates a botlib memory block while guarding against size and counter overflows.
+=============
+*/
 void *GetMemory(size_t size) {
-    if (!g_memory_state.initialised) {
-        if (!BotMemory_Init(g_memory_state.heap_capacity)) {
-            return NULL;
-        }
-    }
+	if (!g_memory_state.initialised) {
+		if (!BotMemory_Init(g_memory_state.heap_capacity)) {
+			return NULL;
+		}
+	}
 
-    if (size == 0) {
-        return NULL;
-    }
+	if (size == 0) {
+		return NULL;
+	}
 
-    size_t total_size = sizeof(bot_memory_block_t) + size;
-    if (g_memory_state.allocated_bytes + total_size > g_memory_state.heap_capacity) {
-        BotMemory_Log(BOT_MEMORY_LOG_ERROR, "GetMemory: out of botlib memory (requested %zu bytes)\n", size);
-        return NULL;
-    }
+	if (size > SIZE_MAX - sizeof(bot_memory_block_t)) {
+		BotMemory_Log(BOT_MEMORY_LOG_ERROR, "GetMemory: size overflow (%zu bytes)\n", size);
+		return NULL;
+	}
 
-    bot_memory_block_t *block = (bot_memory_block_t *)malloc(total_size);
-    if (block == NULL) {
-        BotMemory_Log(BOT_MEMORY_LOG_ERROR, "GetMemory: system allocation failed (%zu bytes)\n", size);
-        return NULL;
-    }
+	size_t total_size = sizeof(bot_memory_block_t) + size;
 
-    block->magic = BOT_MEMORY_MAGIC;
-    block->payload = (uint8_t *)(block + 1);
-    block->total_size = total_size;
-    block->prev = NULL;
-    block->next = NULL;
+	if (g_memory_state.allocated_bytes > SIZE_MAX - total_size) {
+		BotMemory_Log(BOT_MEMORY_LOG_ERROR, "GetMemory: allocation counter overflow (%zu bytes)\n", size);
+		return NULL;
+	}
 
-    BotMemory_TrackAllocation(block);
+	if (g_memory_state.allocated_bytes > g_memory_state.heap_capacity ||
+			total_size > g_memory_state.heap_capacity - g_memory_state.allocated_bytes) {
+		BotMemory_Log(BOT_MEMORY_LOG_ERROR, "GetMemory: out of botlib memory (requested %zu bytes)\n", size);
+		return NULL;
+	}
 
-    return block->payload;
+	bot_memory_block_t *block = (bot_memory_block_t *)malloc(total_size);
+	if (block == NULL) {
+		BotMemory_Log(BOT_MEMORY_LOG_ERROR, "GetMemory: system allocation failed (%zu bytes)\n", size);
+		return NULL;
+	}
+
+	block->magic = BOT_MEMORY_MAGIC;
+	block->payload = (uint8_t *)(block + 1);
+	block->total_size = total_size;
+	block->prev = NULL;
+	block->next = NULL;
+
+	BotMemory_TrackAllocation(block);
+
+	return block->payload;
 }
-
 void *GetClearedMemory(size_t size) {
     void *ptr = GetMemory(size);
     if (ptr != NULL) {
