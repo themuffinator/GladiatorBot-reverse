@@ -153,7 +153,15 @@ static double BotChat_CurrentTimeSeconds(const bot_chatstate_t *state)
 		return state->time_override_seconds;
 	}
 
-	return (double)clock() / (double)CLOCKS_PER_SEC;
+	#if defined(CLOCK_MONOTONIC)
+	struct timespec ts;
+	if (clock_gettime(CLOCK_MONOTONIC, &ts) == 0)
+	{
+		return (double)ts.tv_sec + ((double)ts.tv_nsec / 1000000000.0);
+	}
+	#endif
+
+	return (double)time(NULL);
 }
 
 /*
