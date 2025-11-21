@@ -1,4 +1,5 @@
 #include "botlib/common/l_assets.h"
+#include "botlib/common/l_libvar.h"
 #include "botlib/common/l_log.h"
 #include "botlib/common/l_memory.h"
 #include "botlib/interface/botlib_interface.h"
@@ -12,12 +13,15 @@
 static int g_last_botlib_message_type = 0;
 static char g_last_botlib_message[1024];
 typedef struct botlib_test_libvar_s {
-	char name[64];
-	float value;
+        char name[64];
+        float value;
 } botlib_test_libvar_t;
 
 static botlib_test_libvar_t g_botlib_test_libvars[16];
 static size_t g_botlib_test_libvar_count = 0;
+static char g_bridge_maxclients_name[32] = "maxclients";
+static char g_bridge_maxclients_string[32] = "4";
+static libvar_t g_bridge_maxclients;
 
 /*
 =============
@@ -29,6 +33,40 @@ Clears the cached libvar overrides for the test harness.
 void BotLib_TestResetLibVars(void)
 {
 	g_botlib_test_libvar_count = 0;
+
+	g_bridge_maxclients.value = strtof(g_bridge_maxclients_string, NULL);
+	g_bridge_maxclients.modified = 0;
+	g_bridge_maxclients.name = g_bridge_maxclients_name;
+	g_bridge_maxclients.string = g_bridge_maxclients_string;
+	g_bridge_maxclients.next = NULL;
+}
+
+/*
+=============
+BotLib_TestSetMaxClients
+
+Overrides the mocked maxclients libvar used by the bridge.
+=============
+*/
+void BotLib_TestSetMaxClients(float value)
+{
+	snprintf(g_bridge_maxclients_string,
+		sizeof(g_bridge_maxclients_string),
+		"%g",
+		value);
+	g_bridge_maxclients.value = value;
+}
+
+/*
+=============
+Bridge_MaxClients
+
+Provides the maxclients libvar for bridge validation hooks.
+=============
+*/
+libvar_t *Bridge_MaxClients(void)
+{
+	return &g_bridge_maxclients;
 }
 
 /*
@@ -197,17 +235,7 @@ GetClearedMemory
 */
 void *GetClearedMemory(size_t size)
 {
-	return calloc(1, size);
-}
-
-/*
-=============
-GetMemory
-=============
-*/
-void *GetMemory(size_t size)
-{
-	return malloc(size);
+return calloc(1, size);
 }
 
 /*
