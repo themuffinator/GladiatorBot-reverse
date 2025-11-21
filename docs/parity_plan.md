@@ -10,10 +10,10 @@
 The items below are ordered; "Work on the plan" means executing the next unchecked task.
 
 1. [x] Publish the baseline audit and execution plan (this document).
-2. [ ] Harden parity harness prerequisites so asset-dependent skips become actionable failures.
-   - Document minimal asset pack and environment setup in `tests/README.md` with exact paths for mover (`dev_tools/assets/maps/test_mover.{bsp,aas}`), lexer samples, weight scripts, and Quake II assets.
-   - Add a `dev_tools/scripts/verify_parity_assets.sh` helper that checks presence/permissions for all required assets and exits non-zero with remediation hints.
-   - Wire the verifier into CTest (pre-test step) and CI jobs so missing assets surface as failed setup rather than silent skips.
+2. [x] Harden parity harness prerequisites so asset-dependent skips become actionable failures.
+   - Documented the minimal asset pack and environment setup in `tests/README.md` with exact paths for mover (`dev_tools/assets/maps/test_mover.{bsp,aas}`), lexer samples, weight scripts, and Quake II assets.
+   - Added a `dev_tools/scripts/verify_parity_assets.sh` helper that checks presence/permissions for all required assets and exits non-zero with remediation hints.
+   - Wired the verifier into CTest as a pre-step so missing assets surface as failed setup rather than silent skips. CI inherits the same check via `ctest`.
 3. [ ] Replace remaining `cmocka_skip()` placeholders in `tests/parity/test_bot_interface.c` with assertions that mirror the HLIL contract and `tests/parity/README.md` scenarios.
    - Catalogue each skip with the intended behaviour, data fixture, and any HLIL reference needed; track progress in an in-file checklist comment.
    - Implement deterministic fixtures that do not rely on ad hoc runtime availability (e.g., staged movers/weights) and assert expected exports/state transitions.

@@ -21,6 +21,12 @@ if(BOTLIB_PARITY_ENABLE_SOURCES)
     target_include_directories(botlib_parity_tests PRIVATE ${PROJECT_SOURCE_DIR}/src)
     target_compile_definitions(botlib_parity_tests PRIVATE PROJECT_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
     add_test(NAME botlib_parity COMMAND botlib_parity_tests)
+    set_tests_properties(
+        botlib_parity
+        PROPERTIES
+            FIXTURES_REQUIRED parity_assets
+            LABELS "Parity"
+    )
 else()
     add_custom_target(botlib_parity_tests
         COMMENT "Botlib parity tests placeholder until BOTLIB_PARITY_ENABLE_SOURCES is enabled."
