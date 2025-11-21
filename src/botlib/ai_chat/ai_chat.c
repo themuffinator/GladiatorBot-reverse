@@ -1720,26 +1720,43 @@ int sendto)
 	}
 }
 
+/*
+=============
+BotFreeChatFile
+
+Releases chat resources, cooldown storage, and deterministic clock overrides.
+=============
+*/
 void BotFreeChatFile(bot_chatstate_t *state)
 {
-    if (state == NULL) {
-        return;
-    }
+	if (state == NULL)
+	{
+		return;
+	}
 
-    if (state->active_script != NULL) {
-        PS_FreeScript(state->active_script);
-        state->active_script = NULL;
-    }
+	if (state->active_script != NULL)
+	{
+		PS_FreeScript(state->active_script);
+		state->active_script = NULL;
+	}
 
-    if (state->active_source != NULL) {
-        PC_FreeSource(state->active_source);
-        state->active_source = NULL;
-    }
+	if (state->active_source != NULL)
+	{
+		PC_FreeSource(state->active_source);
+		state->active_source = NULL;
+	}
 
-    BotChat_FreeSynonymContexts(state);
-    BotChat_FreeMatchContexts(state);
-    BotChat_FreeReplies(state);
-    BotChat_ClearMetadata(state);
+	BotChat_FreeSynonymContexts(state);
+	BotChat_FreeMatchContexts(state);
+	BotChat_FreeReplies(state);
+	BotChat_ClearMetadata(state);
+
+	free(state->cooldowns);
+	state->cooldowns = NULL;
+	state->cooldown_count = 0;
+	state->cooldown_capacity = 0;
+	state->has_time_override = 0;
+	state->time_override_seconds = 0.0;
 }
 
 void BotQueueConsoleMessage(bot_chatstate_t *state, int type, const char *message)
