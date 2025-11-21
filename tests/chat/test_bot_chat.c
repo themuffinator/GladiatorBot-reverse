@@ -1,5 +1,6 @@
 #include <assert.h>
 #include <stdbool.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -7,12 +8,15 @@
 #include "botlib/common/l_log.h"
 #include "botlib/precomp/l_precomp.h"
 #include "botlib/precomp/l_script.h"
+#include "q2bridge/botlib.h"
+#include "q2bridge/bridge.h"
 
 extern void BotLib_TestResetLastMessage(void);
 extern const char *BotLib_TestGetLastMessage(void);
 extern int BotLib_TestGetLastMessageType(void);
 extern void BotLib_TestSetLibVar(const char *var_name, float value);
 extern void BotLib_TestResetLibVars(void);
+extern void BotLib_TestSetMaxClients(float value);
 
 enum
 {
@@ -92,13 +96,96 @@ Pushes a snapshot back onto the FIFO for subsequent checks.
 =============
 */
 static void restore_console_queue(bot_chatstate_t *chat,
-	const test_console_message_t *messages,
-	size_t count)
+        const test_console_message_t *messages,
+        size_t count)
 {
-	for (size_t i = 0; i < count; ++i)
+        for (size_t i = 0; i < count; ++i)
+        {
+                BotQueueConsoleMessage(chat, messages[i].type, messages[i].text);
+        }
+}
+
+typedef struct chat_bridge_mock_s
+{
+	int command_calls;
+	int last_client;
+	char last_command[256];
+	int print_calls;
+	int last_print_type;
+	char last_print_message[256];
+} chat_bridge_mock_t;
+
+static chat_bridge_mock_t g_chat_bridge_mock;
+static bot_import_t g_chat_bridge_imports;
+
+/*
+=============
+ChatBridge_MockBotClientCommand
+
+Captures BotClientCommand invocations for bridge-aware chat tests.
+=============
+*/
+static void ChatBridge_MockBotClientCommand(int client, char *fmt, ...)
+{
+	if (fmt == NULL)
 	{
-		BotQueueConsoleMessage(chat, messages[i].type, messages[i].text);
+		return;
 	}
+
+	va_list args;
+	va_start(args, fmt);
+	vsnprintf(g_chat_bridge_mock.last_command,
+		sizeof(g_chat_bridge_mock.last_command),
+		fmt,
+		args);
+	va_end(args);
+
+	g_chat_bridge_mock.command_calls += 1;
+	g_chat_bridge_mock.last_client = client;
+}
+
+/*
+=============
+ChatBridge_MockPrint
+
+Records bridge print diagnostics for chat dispatch tests.
+=============
+*/
+static void ChatBridge_MockPrint(int type, char *fmt, ...)
+{
+	if (fmt == NULL)
+	{
+		return;
+	}
+
+	va_list args;
+	va_start(args, fmt);
+	vsnprintf(g_chat_bridge_mock.last_print_message,
+		sizeof(g_chat_bridge_mock.last_print_message),
+		fmt,
+		args);
+	va_end(args);
+
+	g_chat_bridge_mock.print_calls += 1;
+	g_chat_bridge_mock.last_print_type = type;
+}
+
+/*
+=============
+ChatBridge_Reset
+
+Initialises the bridge import table and clears prior mock state.
+=============
+*/
+static void ChatBridge_Reset(void)
+{
+	memset(&g_chat_bridge_mock, 0, sizeof(g_chat_bridge_mock));
+	memset(&g_chat_bridge_imports, 0, sizeof(g_chat_bridge_imports));
+
+	g_chat_bridge_imports.BotClientCommand = ChatBridge_MockBotClientCommand;
+	g_chat_bridge_imports.Print = ChatBridge_MockPrint;
+
+	Q2Bridge_SetImportTable(&g_chat_bridge_imports);
 }
 
 /*
@@ -602,9 +689,9 @@ diagnostic is enqueued when fastchat is enabled.
 */
 static void test_botloadchatfile_reports_missing_chat_context(void)
 {
-	char expected_message[256];
-	const int written = snprintf(expected_message,
-		sizeof(expected_message),
+char expected_message[256];
+const int written = snprintf(expected_message,
+sizeof(expected_message),
 		"couldn't find chat %s in %s\n",
 		"reply",
 		BOT_ASSET_ROOT "/rchat.c");
@@ -624,7 +711,99 @@ static void test_botloadchatfile_reports_missing_chat_context(void)
 	assert_console_contains_message(chat, PRT_ERROR, expected_message);
 	drain_console(chat);
 
-	configure_chat_libvars(0.0f, 0.0f);
+configure_chat_libvars(0.0f, 0.0f);
+BotFreeChatState(chat);
+}
+
+/*
+=============
+test_enter_chat_sends_command_via_bridge
+
+Verifies BotEnterChat formats the say command and forwards it through the
+bridge import table.
+=============
+*/
+static void test_enter_chat_sends_command_via_bridge(void)
+{
+	ChatBridge_Reset();
+	BotLib_TestSetMaxClients(8.0f);
+
+	bot_chatstate_t *chat = BotAllocChatState();
+	assert(chat != NULL);
+	assert(BotLoadChatFile(chat, BOT_ASSET_ROOT "/unit_test_chat.c", "unit_enter_valid"));
+
+	drain_console(chat);
+	BotChat_SetContextCooldown(chat, 2, 0.0);
+	BotEnterChat(chat, 2, 0);
+
+	assert(g_chat_bridge_mock.command_calls == 1);
+	assert(g_chat_bridge_mock.last_client == 2);
+	assert(strcmp(g_chat_bridge_mock.last_command,
+		"say {NETNAME} triggered the deterministic join message") == 0);
+
+	Q2Bridge_ClearImportTable();
+	BotFreeChatState(chat);
+}
+
+/*
+=============
+test_enter_chat_team_command_uses_say_team
+
+Ensures team sendto values use say_team when dispatching chat text.
+=============
+*/
+static void test_enter_chat_team_command_uses_say_team(void)
+{
+	ChatBridge_Reset();
+	BotLib_TestSetMaxClients(8.0f);
+
+	bot_chatstate_t *chat = BotAllocChatState();
+	assert(chat != NULL);
+	assert(BotLoadChatFile(chat, BOT_ASSET_ROOT "/unit_test_chat.c", "unit_enter_valid"));
+
+	drain_console(chat);
+	BotChat_SetContextCooldown(chat, 2, 0.0);
+	BotEnterChat(chat, 3, 1);
+
+	assert(g_chat_bridge_mock.command_calls == 1);
+	assert(g_chat_bridge_mock.last_client == 3);
+	assert(strcmp(g_chat_bridge_mock.last_command,
+		"say_team {NETNAME} triggered the deterministic join message") == 0);
+
+	Q2Bridge_ClearImportTable();
+	BotFreeChatState(chat);
+}
+
+/*
+=============
+test_reply_chat_dispatches_using_bridge_speaker
+
+Checks reply construction is forwarded to the bridge using the active speaking
+client binding.
+=============
+*/
+static void test_reply_chat_dispatches_using_bridge_speaker(void)
+{
+	ChatBridge_Reset();
+	BotLib_TestSetMaxClients(8.0f);
+
+	bot_chatstate_t *chat = BotAllocChatState();
+	assert(chat != NULL);
+	assert(BotLoadChatFile(chat, BOT_ASSET_ROOT "/match_reply.c", "match_reply"));
+
+	drain_console(chat);
+	BotChat_SetContextCooldown(chat, 2, 0.0);
+
+	BotEnterChat(chat, 4, 0);
+	ChatBridge_Reset();
+	drain_console(chat);
+
+	assert(BotReplyChat(chat, "Quad Damage acquired", 2));
+	assert(g_chat_bridge_mock.command_calls == 1);
+	assert(g_chat_bridge_mock.last_client == 4);
+	assert(strcmp(g_chat_bridge_mock.last_command, "say NEARBYITEM acquired") == 0);
+
+	Q2Bridge_ClearImportTable();
 	BotFreeChatState(chat);
 }
 
@@ -651,7 +830,11 @@ int main(void) {
 	test_reply_chat_logs_missing_contexts();
 	test_botloadchatfile_fastchat_nochat_combinations();
 	test_botloadchatfile_reports_missing_chat_context();
+	test_enter_chat_sends_command_via_bridge();
+	test_enter_chat_team_command_uses_say_team();
+	test_reply_chat_dispatches_using_bridge_speaker();
 
 	printf("bot_chat_tests: all checks passed\n");
 	return 0;
 }
+
