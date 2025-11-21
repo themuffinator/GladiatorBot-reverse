@@ -12,6 +12,8 @@
 
 #define BOT_CHAT_MAX_CONSOLE_MESSAGES 16
 #define BOT_CHAT_MAX_MESSAGE_CHARS 256
+#define BOT_CHAT_MAX_TOKEN_CHARS 64
+#define BOT_CHAT_MAX_TOKENS 64
 
 typedef struct bot_console_message_s {
     int type;
@@ -257,6 +259,7 @@ BotChat_SelectRandomTemplate
 Picks a template from the context using the hashing helper.
 =============
 */
+static size_t BotChat_SelectIndex(const char *seed, size_t count);
 static const char *BotChat_SelectRandomTemplate(const bot_chatstate_t *state,
 const bot_match_context_t *context,
 const char *seed)
@@ -269,6 +272,265 @@ const char *seed)
 
 	size_t index = BotChat_SelectIndex(seed, context->template_count);
 	return context->templates[index];
+}
+
+/*
+=============
+BotChat_TokenizeText
+
+Splits the provided text into lower-case tokens separated by non-alphanumeric
+characters.
+=============
+*/
+static size_t BotChat_TokenizeText(const char *text,
+char tokens[][BOT_CHAT_MAX_TOKEN_CHARS],
+size_t max_tokens)
+{
+	if (text == NULL || max_tokens == 0)
+	{
+		return 0;
+	}
+
+	size_t count = 0;
+	size_t length = 0;
+	char buffer[BOT_CHAT_MAX_TOKEN_CHARS];
+
+	for (const char *ptr = text; *ptr != '\0'; ++ptr)
+	{
+		if (isalnum((unsigned char)*ptr) || *ptr == '_')
+		{
+			if (length + 1 < sizeof(buffer))
+			{
+				buffer[length++] = (char)tolower((unsigned char)*ptr);
+			}
+			continue;
+		}
+
+		if (length == 0)
+		{
+			continue;
+		}
+
+		buffer[length] = '\0';
+		strncpy(tokens[count], buffer, BOT_CHAT_MAX_TOKEN_CHARS - 1);
+		tokens[count][BOT_CHAT_MAX_TOKEN_CHARS - 1] = '\0';
+		length = 0;
+		if (++count == max_tokens)
+		{
+			return count;
+		}
+	}
+
+	if (length > 0 && count < max_tokens)
+	{
+		buffer[length] = '\0';
+		strncpy(tokens[count], buffer, BOT_CHAT_MAX_TOKEN_CHARS - 1);
+		tokens[count][BOT_CHAT_MAX_TOKEN_CHARS - 1] = '\0';
+		++count;
+	}
+
+	return count;
+}
+
+/*
+=============
+BotChat_FindSynonymContextByToken
+
+Locates the synonym context whose suffix matches the provided identifier.
+=============
+*/
+static const bot_synonym_context_t *BotChat_FindSynonymContextByToken(
+const bot_chatstate_t *state,
+const char *token)
+{
+	if (state == NULL || token == NULL)
+	{
+		return NULL;
+	}
+
+	char token_upper[BOT_CHAT_MAX_TOKEN_CHARS];
+	size_t token_index = 0;
+	for (; token[token_index] != '\0' && token_index + 1 < sizeof(token_upper); ++token_index)
+	{
+		token_upper[token_index] = (char)toupper((unsigned char)token[token_index]);
+	}
+	token_upper[token_index] = '\0';
+
+	for (size_t i = 0; i < state->synonym_context_count; ++i)
+	{
+		const bot_synonym_context_t *context = &state->synonym_contexts[i];
+		if (context->context_name == NULL)
+		{
+			continue;
+		}
+
+		const char *name = context->context_name;
+		if (strncmp(name, "CONTEXT_", 8) == 0)
+		{
+			name += 8;
+		}
+
+		char context_upper[BOT_CHAT_MAX_TOKEN_CHARS];
+		size_t context_index = 0;
+		for (; name[context_index] != '\0' && context_index + 1 < sizeof(context_upper); ++context_index)
+		{
+			context_upper[context_index] = (char)toupper((unsigned char)name[context_index]);
+		}
+		context_upper[context_index] = '\0';
+
+		if (strcmp(context_upper, token_upper) == 0)
+		{
+			return context;
+		}
+	}
+
+	return NULL;
+}
+
+/*
+=============
+BotChat_MessageContainsPhrase
+
+Verifies that the message tokens contain the provided phrase starting at or
+after the supplied index.
+=============
+*/
+static int BotChat_MessageContainsPhrase(
+const char message_tokens[][BOT_CHAT_MAX_TOKEN_CHARS],
+size_t message_count,
+size_t start_index,
+const char phrase_tokens[][BOT_CHAT_MAX_TOKEN_CHARS],
+size_t phrase_count,
+size_t *next_index)
+{
+	if (phrase_count == 0 || message_count == 0)
+	{
+		return 0;
+	}
+
+	for (size_t i = start_index; i + phrase_count <= message_count; ++i)
+	{
+		int matches = 1;
+		for (size_t j = 0; j < phrase_count; ++j)
+		{
+			if (strcmp(message_tokens[i + j], phrase_tokens[j]) != 0)
+			{
+				matches = 0;
+				break;
+			}
+		}
+		if (matches)
+		{
+			if (next_index != NULL)
+			{
+				*next_index = i + phrase_count;
+			}
+			return 1;
+		}
+	}
+
+	return 0;
+}
+
+/*
+=============
+BotChat_TemplateMatchesMessage
+
+Returns non-zero when the supplied message satisfies the match template.
+=============
+*/
+static int BotChat_TemplateMatchesMessage(const bot_chatstate_t *state,
+const char *template_text,
+const char *message)
+{
+	char template_tokens[BOT_CHAT_MAX_TOKENS][BOT_CHAT_MAX_TOKEN_CHARS];
+	char message_tokens[BOT_CHAT_MAX_TOKENS][BOT_CHAT_MAX_TOKEN_CHARS];
+
+	const size_t template_count = BotChat_TokenizeText(template_text,
+		template_tokens,
+		BOT_CHAT_MAX_TOKENS);
+	const size_t message_count = BotChat_TokenizeText(message,
+		message_tokens,
+		BOT_CHAT_MAX_TOKENS);
+
+	if (template_count == 0 || message_count == 0)
+	{
+		return 0;
+	}
+
+	size_t message_index = 0;
+	for (size_t i = 0; i < template_count; ++i)
+	{
+		const bot_synonym_context_t *context =
+		BotChat_FindSynonymContextByToken(state, template_tokens[i]);
+		if (context == NULL)
+		{
+			size_t match_position = message_index;
+			int found = 0;
+			while (match_position < message_count)
+			{
+				if (strcmp(template_tokens[i], message_tokens[match_position]) == 0)
+				{
+					message_index = match_position + 1;
+					found = 1;
+					break;
+				}
+				++match_position;
+			}
+			if (!found)
+			{
+				return 0;
+			}
+			continue;
+		}
+
+		int matched_synonym = 0;
+		for (size_t group_index = 0; group_index < context->group_count; ++group_index)
+		{
+			const bot_synonym_group_t *group = &context->groups[group_index];
+			for (size_t phrase_index = 0; phrase_index < group->phrase_count; ++phrase_index)
+			{
+				const bot_synonym_phrase_t *phrase = &group->phrases[phrase_index];
+				if (phrase->text == NULL)
+				{
+					continue;
+				}
+
+				char phrase_tokens[BOT_CHAT_MAX_TOKENS][BOT_CHAT_MAX_TOKEN_CHARS];
+				size_t phrase_count = BotChat_TokenizeText(phrase->text,
+				phrase_tokens,
+				BOT_CHAT_MAX_TOKENS);
+				if (phrase_count == 0)
+				{
+					continue;
+				}
+
+				size_t next_index = message_index;
+				if (BotChat_MessageContainsPhrase(message_tokens,
+				message_count,
+				next_index,
+				phrase_tokens,
+				phrase_count,
+				&next_index))
+				{
+					message_index = next_index;
+					matched_synonym = 1;
+					break;
+				}
+			}
+			if (matched_synonym)
+			{
+				break;
+			}
+		}
+
+		if (!matched_synonym)
+		{
+			return 0;
+		}
+	}
+
+	return 1;
 }
 
 /*
@@ -1616,8 +1878,38 @@ int BotReplyChat(bot_chatstate_t *state, const char *message, unsigned long int 
 		return 0;
 	}
 
+	const char *template_text = NULL;
 	bot_match_context_t *match_context = BotChat_FindMatchContext(state, context);
-	const char *template_text = BotChat_SelectRandomTemplate(state, match_context, message);
+	if (match_context != NULL && match_context->template_count > 0)
+	{
+		size_t *matching_indices = malloc(match_context->template_count * sizeof(size_t));
+		size_t match_count = 0;
+		if (matching_indices != NULL)
+		{
+			for (size_t i = 0; i < match_context->template_count; ++i)
+			{
+				const char *candidate = match_context->templates[i];
+				if (candidate == NULL)
+				{
+					continue;
+				}
+
+				if (BotChat_TemplateMatchesMessage(state, candidate, message))
+				{
+					matching_indices[match_count++] = i;
+				}
+			}
+
+			if (match_count > 0)
+			{
+				size_t selected_index = BotChat_SelectIndex(message, match_count);
+				template_text = match_context->templates[matching_indices[selected_index]];
+			}
+
+			free(matching_indices);
+		}
+	}
+
 	if (template_text != NULL && BotConstructChatMessage(state, context, template_text))
 	{
 		return 1;
@@ -1643,6 +1935,7 @@ int BotReplyChat(bot_chatstate_t *state, const char *message, unsigned long int 
 	BotLib_Print(PRT_MESSAGE, "no rchats\n");
 	return 0;
 }
+
 
 int BotChatLength(const char *message)
 {

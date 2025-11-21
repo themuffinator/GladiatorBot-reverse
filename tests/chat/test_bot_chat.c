@@ -233,6 +233,52 @@ static void test_reply_chat_falls_back_to_reply_table(void) {
 
 /*
 =============
+test_reply_chat_matches_synonym_pattern
+=============
+*/
+static void test_reply_chat_matches_synonym_pattern(void) {
+	bot_chatstate_t *chat = BotAllocChatState();
+	assert(chat != NULL);
+	assert(BotLoadChatFile(chat, BOT_ASSET_ROOT "/match_reply.c", "match_reply"));
+
+	drain_console(chat);
+	BotChat_SetContextCooldown(chat, 2, 0.0);
+	assert(BotReplyChat(chat, "Quad Damage acquired", 2));
+
+	int type = 0;
+	char buffer[256];
+	assert(BotNextConsoleMessage(chat, &type, buffer, sizeof(buffer)));
+	assert(type == 2);
+	assert(strcmp(buffer, "NEARBYITEM acquired") == 0);
+
+	BotFreeChatState(chat);
+}
+
+/*
+=============
+test_reply_chat_without_pattern_falls_back_to_reply_table
+=============
+*/
+static void test_reply_chat_without_pattern_falls_back_to_reply_table(void) {
+	bot_chatstate_t *chat = BotAllocChatState();
+	assert(chat != NULL);
+	assert(BotLoadChatFile(chat, BOT_ASSET_ROOT "/match_reply.c", "match_reply"));
+
+	drain_console(chat);
+	BotChat_SetContextCooldown(chat, 2, 0.0);
+	assert(BotReplyChat(chat, "this text triggers fallback", 2));
+
+	int type = 0;
+	char buffer[256];
+	assert(BotNextConsoleMessage(chat, &type, buffer, sizeof(buffer)));
+	assert(type == 2);
+	assert(strcmp(buffer, "fallback reply") == 0);
+
+	BotFreeChatState(chat);
+}
+
+/*
+=============
 test_enter_chat_enqueues_message
 =============
 */
