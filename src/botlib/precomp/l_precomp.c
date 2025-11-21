@@ -864,6 +864,13 @@ int PC_StringizeTokens(pc_token_t *tokens, pc_token_t *token)
 // Returns:					-
 // Changes Globals:		-
 //============================================================================
+/*
+=============
+PC_MergeTokens
+
+Merges compatible tokens encountered by the token pasting operator.
+=============
+*/
 int PC_MergeTokens(pc_token_t *t1, pc_token_t *t2)
 {
 	//merging of a name with a name or number
@@ -881,7 +888,72 @@ int PC_MergeTokens(pc_token_t *t1, pc_token_t *t2)
 		strcat(t1->string, &t2->string[1]);
 		return qtrue;
 	} //end if
-	//FIXME: merging of two number of the same sub type
+	//merging of two number of the same sub type
+	if (t1->type == TT_NUMBER && t2->type == TT_NUMBER && t1->subtype == t2->subtype)
+	{
+		size_t required = strlen(t1->string) + strlen(t2->string) + 1;
+		if (required > sizeof(t1->string))
+		{
+			return qfalse;
+		} //end if
+
+		strcat(t1->string, t2->string);
+		if (t1->subtype & TT_FLOAT)
+		{
+			char *end = NULL;
+			t1->floatvalue = strtold(t1->string, &end);
+			if (end == NULL || *end != '\0')
+			{
+				return qfalse;
+			} //end if
+			t1->intvalue = (unsigned long int) t1->floatvalue;
+			return qtrue;
+		} //end if
+
+		const char *number = t1->string;
+		int base = 10;
+		if (t1->subtype & TT_HEX)
+		{
+			base = 16;
+			number += 2;
+		} //end if
+		else if (t1->subtype & TT_OCTAL)
+		{
+			base = 8;
+			number += 1;
+		} //end else if
+		else if (t1->subtype & TT_BINARY)
+		{
+			base = 2;
+			number += 2;
+		} //end else if
+
+		unsigned long int value = 0;
+		if (base == 2)
+		{
+			for (const char *cursor = number; *cursor; cursor++)
+			{
+				if (*cursor != '0' && *cursor != '1')
+				{
+					return qfalse;
+				} //end if
+				value = (value << 1) + (unsigned long int)(*cursor - '0');
+			} //end for
+		} //end if
+		else
+		{
+			char *end = NULL;
+			value = strtoul(number, &end, base);
+			if (end == NULL || *end != '\0')
+			{
+				return qfalse;
+			} //end if
+		} //end else
+
+		t1->intvalue = value;
+		t1->floatvalue = (long double) value;
+		return qtrue;
+	} //end if
 	return qfalse;
 } //end of the function PC_MergeTokens
 //============================================================================
