@@ -198,6 +198,37 @@ static void expect_tokens_match_fixture(pc_source_t *source,
     }
 }
 
+/*
+=============
+test_pc_merges_numeric_tokens_with_matching_subtype
+
+Ensures the token pasting operator concatenates numeric tokens that share a subtype.
+=============
+*/
+static void test_pc_merges_numeric_tokens_with_matching_subtype(void **state)
+{
+	(void)state;
+
+	PC_InitLexer();
+
+	const char script[] = "#define MERGE(a,b) a ## b\nMERGE(12, 34)\n";
+	pc_source_t *source = PC_LoadSourceMemory("merge_numbers", script, strlen(script));
+	assert_non_null(source);
+
+	pc_token_t token;
+	assert_int_equal(1, PC_ReadToken(source, &token));
+	assert_int_equal(TT_NUMBER, token.type);
+	assert_true((token.subtype & TT_DECIMAL) != 0);
+	assert_true((token.subtype & TT_INTEGER) != 0);
+	assert_string_equal("1234", token.string);
+	assert_int_equal(1234, (int)token.intvalue);
+
+	assert_int_equal(0, PC_ReadToken(source, &token));
+
+	PC_FreeSource(source);
+	PC_ShutdownLexer();
+}
+
 static void assert_fixture_diagnostics(pc_source_t *source,
                                        const pc_diagnostic_snapshot_t *expected,
                                        size_t expected_count)
@@ -301,6 +332,7 @@ int main(void)
         cmocka_unit_test(test_pc_loads_fw_items_and_matches_hlil_tokens),
         cmocka_unit_test(test_pc_loads_synonyms_and_matches_hlil_tokens),
         cmocka_unit_test(test_pc_peek_and_unread_mirror_hlil_behaviour),
+        cmocka_unit_test(test_pc_merges_numeric_tokens_with_matching_subtype),
     };
 
     return cmocka_run_group_tests(tests, NULL, NULL);
