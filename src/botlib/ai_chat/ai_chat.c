@@ -73,10 +73,14 @@ typedef struct {
 } bot_string_builder_t;
 
 typedef struct {
-    unsigned long context;
-    double duration_seconds;
-    double next_allowed_time;
+unsigned long context;
+double duration_seconds;
+double next_allowed_time;
 } bot_chat_cooldown_entry_t;
+
+typedef struct {
+double next_allowed_time;
+} bot_chat_client_cooldown_t;
 
 typedef struct {
 	const char *name;
@@ -140,10 +144,15 @@ struct bot_chatstate_s {
 	bot_chat_cooldown_entry_t *cooldowns;
 	size_t cooldown_count;
 	size_t cooldown_capacity;
+
+	bot_chat_client_cooldown_t *client_cooldowns;
+	size_t client_cooldown_count;
 	double time_override_seconds;
 	int has_time_override;
 	int speaking_client;
 };
+
+#define BOT_CHAT_MIN_INTERVAL_SECONDS 25.0
 
 /*
 =============
@@ -155,19 +164,191 @@ Returns the synthetic clock time for cooldown evaluation.
 static double BotChat_CurrentTimeSeconds(const bot_chatstate_t *state)
 {
 	if (state != NULL && state->has_time_override)
-	{
-		return state->time_override_seconds;
-	}
+{
+	return state->time_override_seconds;
+}
 
 	#if defined(CLOCK_MONOTONIC)
 	struct timespec ts;
 	if (clock_gettime(CLOCK_MONOTONIC, &ts) == 0)
-	{
-		return (double)ts.tv_sec + ((double)ts.tv_nsec / 1000000000.0);
-	}
+{
+	return (double)ts.tv_sec + ((double)ts.tv_nsec / 1000000000.0);
+}
 	#endif
 
 	return (double)time(NULL);
+}
+
+/*
+=============
+BotChat_FastChatEnabled
+
+Queries the libvar controlling fast chat timing adjustments.
+=============
+*/
+static int BotChat_FastChatEnabled(void)
+{
+	return LibVarValue("fastchat", "0") != 0.0f;
+}
+
+/*
+=============
+BotChat_MinimumIntervalSeconds
+
+Returns the minimum delay enforced between bot chats, scaling down when
+fastchat is enabled to accelerate testing.
+=============
+*/
+static double BotChat_MinimumIntervalSeconds(void)
+{
+	return BotChat_FastChatEnabled() ? 0.0 : BOT_CHAT_MIN_INTERVAL_SECONDS;
+}
+
+/*
+=============
+BotChat_MaxClients
+
+Looks up the maxclients libvar to bound per-bot cooldown tracking.
+=============
+*/
+static size_t BotChat_MaxClients(void)
+{
+	const double value = LibVarValue("maxclients", "4");
+	if (value < 0.0)
+{
+	return 0;
+}
+
+	return (size_t)value;
+}
+
+/*
+=============
+BotChat_GetClientCooldownSlot
+
+Ensures the per-bot cooldown array can track the supplied client index.
+=============
+*/
+static bot_chat_client_cooldown_t *BotChat_GetClientCooldownSlot(bot_chatstate_t *state,
+	size_t client)
+{
+	if (state == NULL)
+{
+	return NULL;
+}
+
+	if (client >= state->client_cooldown_count)
+{
+	size_t capacity = state->client_cooldown_count ? state->client_cooldown_count : 4;
+	while (capacity <= client)
+{
+	capacity *= 2;
+}
+
+	bot_chat_client_cooldown_t *slots = realloc(state->client_cooldowns, capacity * sizeof(*slots));
+	if (slots == NULL)
+{
+	return NULL;
+}
+
+	for (size_t i = state->client_cooldown_count; i < capacity; ++i)
+{
+	slots[i].next_allowed_time = 0.0;
+}
+
+	state->client_cooldowns = slots;
+	state->client_cooldown_count = capacity;
+}
+
+	return &state->client_cooldowns[client];
+}
+
+/*
+=============
+BotChat_ClientCooldownBlocks
+
+Applies the per-bot cooldown guardrail to prevent rapid consecutive chats.
+=============
+*/
+static int BotChat_ClientCooldownBlocks(bot_chatstate_t *state,
+	size_t client,
+	double now_seconds)
+{
+	const double min_interval = BotChat_MinimumIntervalSeconds();
+	bot_chat_client_cooldown_t *slot = BotChat_GetClientCooldownSlot(state, client);
+	if (slot == NULL || min_interval <= 0.0)
+	{
+		if (slot != NULL)
+		{
+			slot->next_allowed_time = now_seconds;
+		}
+
+		return 0;
+	}
+
+	if (slot->next_allowed_time > now_seconds)
+	{
+		char buffer[BOT_CHAT_MAX_MESSAGE_CHARS];
+		const double remaining = slot->next_allowed_time - now_seconds;
+		snprintf(buffer,
+			sizeof(buffer),
+			"client %zu blocked by chat cooldown (%.2fs remaining)\n",
+			client,
+			remaining > 0.0 ? remaining : 0.0);
+		BotQueueConsoleMessage(state, (int)client, buffer);
+		return 1;
+	}
+
+	slot->next_allowed_time = now_seconds + min_interval;
+	return 0;
+}
+
+/*
+=============
+BotChat_EventAllowed
+
+Gates chat execution on nochat, client bounds, and cooldowns while logging
+failures for diagnostics.
+=============
+*/
+static int BotChat_EventAllowed(bot_chatstate_t *state,
+	int client,
+	unsigned long context,
+	double now_seconds)
+{
+	if (LibVarValue("nochat", "0") != 0.0f)
+	{
+		const char *message = "chatting disabled by nochat\n";
+		BotLib_Print(PRT_MESSAGE, "%s", message);
+		BotQueueConsoleMessage(state, PRT_MESSAGE, message);
+		return 0;
+	}
+
+	const size_t max_clients = BotChat_MaxClients();
+	if (client < 0 || (max_clients > 0 && (size_t)client >= max_clients))
+	{
+		char buffer[BOT_CHAT_MAX_MESSAGE_CHARS];
+		snprintf(buffer,
+			sizeof(buffer),
+			"client %d outside chat bounds (max %zu)\n",
+			client,
+			max_clients);
+		BotLib_Print(PRT_WARNING, "%s", buffer);
+		BotQueueConsoleMessage(state, PRT_WARNING, buffer);
+		return 0;
+	}
+
+	if (BotChat_ClientCooldownBlocks(state, (size_t)client, now_seconds))
+	{
+		return 0;
+	}
+
+	if (BotChat_CooldownBlocks(state, context, now_seconds))
+	{
+		return 0;
+	}
+
+	return 1;
 }
 
 /*
@@ -257,7 +438,7 @@ Updates and evaluates cooldown timers for a context.
 */
 static int BotChat_CooldownBlocks(bot_chatstate_t *state,
 unsigned long context,
-double now_seconds)
+	double now_seconds)
 {
 	bot_chat_cooldown_entry_t *entry = BotChat_FindCooldownEntry(state, context, 0);
 	if (entry == NULL || entry->duration_seconds <= 0.0)
@@ -709,7 +890,7 @@ static const char *BotChat_SelectWeightedSynonym(const bot_synonym_context_t *co
 	}
 	}
 
-return NULL;
+	return NULL;
 }
 
 /*
@@ -1716,9 +1897,9 @@ bot_chatstate_t *BotAllocChatState(void)
 
 void BotFreeChatState(bot_chatstate_t *state)
 {
-    if (state == NULL) {
-        return;
-    }
+if (state == NULL) {
+return;
+}
 
     BotFreeChatFile(state);
 BotChat_FreeSynonymContexts(state);
@@ -1728,6 +1909,9 @@ free(state->cooldowns);
 state->cooldowns = NULL;
 state->cooldown_count = 0;
 state->cooldown_capacity = 0;
+	free(state->client_cooldowns);
+	state->client_cooldowns = NULL;
+state->client_cooldown_count = 0;
 FreeMemory(state);
 }
 
@@ -2002,21 +2186,24 @@ void BotFreeChatFile(bot_chatstate_t *state)
 
 	BotChat_FreeSynonymContexts(state);
 	BotChat_FreeMatchContexts(state);
-	BotChat_FreeReplies(state);
-	BotChat_ClearMetadata(state);
+BotChat_FreeReplies(state);
+BotChat_ClearMetadata(state);
 
-	free(state->cooldowns);
-	state->cooldowns = NULL;
-	state->cooldown_count = 0;
-	state->cooldown_capacity = 0;
-	state->has_time_override = 0;
-	state->time_override_seconds = 0.0;
+free(state->cooldowns);
+state->cooldowns = NULL;
+state->cooldown_count = 0;
+state->cooldown_capacity = 0;
+	free(state->client_cooldowns);
+	state->client_cooldowns = NULL;
+state->client_cooldown_count = 0;
+state->has_time_override = 0;
+state->time_override_seconds = 0.0;
 }
 
 void BotQueueConsoleMessage(bot_chatstate_t *state, int type, const char *message)
 {
-if (state == NULL || message == NULL) {
-return;
+	if (state == NULL || message == NULL) {
+	return;
 }
 
     if (state->console_count == BOT_CHAT_MAX_CONSOLE_MESSAGES) {
@@ -2031,7 +2218,7 @@ return;
     slot->type = type;
     strncpy(slot->text, message, sizeof(slot->text) - 1);
     slot->text[sizeof(slot->text) - 1] = '\0';
-state->console_count++;
+	state->console_count++;
 }
 
 /*
@@ -2153,18 +2340,18 @@ Builds and dispatches the MSG_ENTERGAME template while respecting cooldowns.
 */
 void BotEnterChat(bot_chatstate_t *state, int client, int sendto)
 {
-	if (state == NULL)
-	{
-		return;
-	}
+if (state == NULL)
+{
+return;
+}
 
-	state->speaking_client = client;
+state->speaking_client = client;
 
-	const unsigned long context = 2;
-	if (BotChat_CooldownBlocks(state, context, BotChat_CurrentTimeSeconds(state)))
-	{
-		return;
-	}
+const unsigned long context = 2;
+if (!BotChat_EventAllowed(state, client, context, BotChat_CurrentTimeSeconds(state)))
+{
+return;
+}
 
 	bot_match_context_t *match_context = BotChat_FindMatchContext(state, context);
 	const char *template_text = BotChat_SelectRandomTemplate(state,
@@ -2194,15 +2381,15 @@ tables, emitting diagnostics when no response can be generated.
 */
 int BotReplyChat(bot_chatstate_t *state, const char *message, unsigned long int context)
 {
-	if (state == NULL || message == NULL)
-	{
-		return 0;
-	}
+if (state == NULL || message == NULL)
+{
+return 0;
+}
 
-	if (BotChat_CooldownBlocks(state, context, BotChat_CurrentTimeSeconds(state)))
-	{
-		return 0;
-	}
+if (!BotChat_EventAllowed(state, state->speaking_client, context, BotChat_CurrentTimeSeconds(state)))
+{
+return 0;
+}
 
 	const char *template_text = NULL;
 	bot_match_context_t *match_context = BotChat_FindMatchContext(state, context);
