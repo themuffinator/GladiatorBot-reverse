@@ -93,6 +93,16 @@ set_tests_properties(
 
 if(Python3_Interpreter_FOUND)
     add_test(
+        NAME be_ai_parity_matrix
+        COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/dev_tools/scripts/check_be_ai_matrix.py
+    )
+    set_tests_properties(
+        be_ai_parity_matrix
+        PROPERTIES
+            LABELS "Docs"
+    )
+
+    add_test(
         NAME headless_quake2_parity
         COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tests/headless/run_headless_parity.py
     )
@@ -104,5 +114,5 @@ if(Python3_Interpreter_FOUND)
             SKIP_RETURN_CODE 125
     )
 else()
-    message(STATUS "Python 3 interpreter not found; skipping headless Quake II parity harness registration")
+    message(STATUS "Python 3 interpreter not found; skipping documentation and headless Python-driven checks")
 endif()
