@@ -15,6 +15,16 @@
 #define BOT_CHAT_MAX_MESSAGE_CHARS 256
 #define BOT_CHAT_MAX_TOKEN_CHARS 64
 #define BOT_CHAT_MAX_TOKENS 64
+#define BOT_CHAT_CONTEXT_DEATH 1
+#define BOT_CHAT_CONTEXT_ENTERGAME 2
+#define BOT_CHAT_CONTEXT_KILL 25
+#define BOT_CHAT_CONTEXT_ENEMYSUICIDE 34
+#define BOT_CHAT_CONTEXT_HITTALKING 35
+#define BOT_CHAT_CONTEXT_HITNODEATH 36
+#define BOT_CHAT_CONTEXT_HITNOKILL 37
+#define BOT_CHAT_CONTEXT_RANDOM 38
+#define BOT_CHAT_CONTEXT_INSULT 39
+#define BOT_CHAT_CONTEXT_PRAISE 40
 
 enum
 {
@@ -271,12 +281,12 @@ Applies the per-bot cooldown guardrail to prevent rapid consecutive chats.
 =============
 */
 static int BotChat_ClientCooldownBlocks(bot_chatstate_t *state,
-	size_t client,
-	double now_seconds)
+        size_t client,
+        double now_seconds)
 {
-	const double min_interval = BotChat_MinimumIntervalSeconds();
-	bot_chat_client_cooldown_t *slot = BotChat_GetClientCooldownSlot(state, client);
-	if (slot == NULL || min_interval <= 0.0)
+        const double min_interval = BotChat_MinimumIntervalSeconds();
+        bot_chat_client_cooldown_t *slot = BotChat_GetClientCooldownSlot(state, client);
+        if (slot == NULL || min_interval <= 0.0)
 	{
 		if (slot != NULL)
 		{
@@ -302,6 +312,10 @@ static int BotChat_ClientCooldownBlocks(bot_chatstate_t *state,
 	slot->next_allowed_time = now_seconds + min_interval;
 	return 0;
 }
+
+static int BotChat_CooldownBlocks(bot_chatstate_t *state,
+		unsigned long context,
+		double now_seconds);
 
 /*
 =============
@@ -1228,84 +1242,137 @@ static int BotChat_StringBuilderAppendIdentifier(bot_string_builder_t *builder,
 
 static unsigned long BotChat_MessageTypeFromIdentifier(const char *identifier, size_t length)
 {
-    if (length == 0) {
-        return 0;
-    }
-    char buffer[64];
-    if (length >= sizeof(buffer)) {
-        return 0;
-    }
-    for (size_t i = 0; i < length; ++i) {
-        buffer[i] = (char)toupper((unsigned char)identifier[i]);
-    }
-    buffer[length] = '\0';
+	if (length == 0) {
+		return 0;
+	}
+	char buffer[64];
+	if (length >= sizeof(buffer)) {
+		return 0;
+	}
+	for (size_t i = 0; i < length; ++i) {
+		buffer[i] = (char)toupper((unsigned char)identifier[i]);
+	}
+	buffer[length] = '\0';
 
-    if (strcmp(buffer, "MSG_DEATH") == 0) {
-        return 1;
-    }
-    if (strcmp(buffer, "MSG_ENTERGAME") == 0) {
-        return 2;
-    }
-    if (strcmp(buffer, "MSG_HELP") == 0) {
-        return 3;
-    }
-    if (strcmp(buffer, "MSG_ACCOMPANY") == 0) {
-        return 4;
-    }
-    if (strcmp(buffer, "MSG_DEFENDKEYAREA") == 0) {
-        return 5;
-    }
-    if (strcmp(buffer, "MSG_RUSHBASE") == 0) {
-        return 6;
-    }
-    if (strcmp(buffer, "MSG_GETFLAG") == 0) {
-        return 7;
-    }
-    if (strcmp(buffer, "MSG_STARTTEAMLEADERSHIP") == 0) {
-        return 8;
-    }
-    if (strcmp(buffer, "MSG_STOPTEAMLEADERSHIP") == 0) {
-        return 9;
-    }
-    if (strcmp(buffer, "MSG_WAIT") == 0) {
-        return 10;
-    }
-    if (strcmp(buffer, "MSG_WHATAREYOUDOING") == 0) {
-        return 11;
-    }
-    if (strcmp(buffer, "MSG_JOINSUBTEAM") == 0) {
-        return 12;
-    }
-    if (strcmp(buffer, "MSG_LEAVESUBTEAM") == 0) {
-        return 13;
-    }
-    if (strcmp(buffer, "MSG_CREATENEWFORMATION") == 0) {
-        return 14;
-    }
-    if (strcmp(buffer, "MSG_FORMATIONPOSITION") == 0) {
-        return 15;
-    }
-    if (strcmp(buffer, "MSG_FORMATIONSPACE") == 0) {
-        return 16;
-    }
-    if (strcmp(buffer, "MSG_DOFORMATION") == 0) {
-        return 17;
-    }
-    if (strcmp(buffer, "MSG_DISMISS") == 0) {
-        return 18;
-    }
-    if (strcmp(buffer, "MSG_CAMP") == 0) {
-        return 19;
-    }
-    if (strcmp(buffer, "MSG_CHECKPOINT") == 0) {
-        return 20;
-    }
-    if (strcmp(buffer, "MSG_PATROL") == 0) {
-        return 21;
-    }
-    return 0;
+	if (strcmp(buffer, "MSG_DEATH") == 0) {
+		return BOT_CHAT_CONTEXT_DEATH;
+	}
+	if (strcmp(buffer, "MSG_ENTERGAME") == 0) {
+		return BOT_CHAT_CONTEXT_ENTERGAME;
+	}
+	if (strcmp(buffer, "MSG_HELP") == 0) {
+		return 3;
+	}
+	if (strcmp(buffer, "MSG_ACCOMPANY") == 0) {
+		return 4;
+	}
+	if (strcmp(buffer, "MSG_DEFENDKEYAREA") == 0) {
+		return 5;
+	}
+	if (strcmp(buffer, "MSG_RUSHBASE") == 0) {
+		return 6;
+	}
+	if (strcmp(buffer, "MSG_GETFLAG") == 0) {
+		return 7;
+	}
+	if (strcmp(buffer, "MSG_STARTTEAMLEADERSHIP") == 0) {
+		return 8;
+	}
+	if (strcmp(buffer, "MSG_STOPTEAMLEADERSHIP") == 0) {
+		return 9;
+	}
+	if (strcmp(buffer, "MSG_WAIT") == 0) {
+		return 10;
+	}
+	if (strcmp(buffer, "MSG_WHATAREYOUDOING") == 0) {
+		return 11;
+	}
+	if (strcmp(buffer, "MSG_JOINSUBTEAM") == 0) {
+		return 12;
+	}
+	if (strcmp(buffer, "MSG_LEAVESUBTEAM") == 0) {
+		return 13;
+	}
+	if (strcmp(buffer, "MSG_CREATENEWFORMATION") == 0) {
+		return 14;
+	}
+	if (strcmp(buffer, "MSG_FORMATIONPOSITION") == 0) {
+		return 15;
+	}
+	if (strcmp(buffer, "MSG_FORMATIONSPACE") == 0) {
+		return 16;
+	}
+	if (strcmp(buffer, "MSG_DOFORMATION") == 0) {
+		return 17;
+	}
+	if (strcmp(buffer, "MSG_DISMISS") == 0) {
+		return 18;
+	}
+	if (strcmp(buffer, "MSG_CAMP") == 0) {
+		return 19;
+	}
+	if (strcmp(buffer, "MSG_CHECKPOINT") == 0) {
+		return 20;
+	}
+	if (strcmp(buffer, "MSG_PATROL") == 0) {
+		return 21;
+	}
+	if (strcmp(buffer, "MSG_LEADTHEWAY") == 0) {
+		return 23;
+	}
+	if (strcmp(buffer, "MSG_GETITEM") == 0) {
+		return 24;
+	}
+	if (strcmp(buffer, "MSG_KILL") == 0) {
+		return BOT_CHAT_CONTEXT_KILL;
+	}
+	if (strcmp(buffer, "MSG_WHEREAREYOU") == 0) {
+		return 26;
+	}
+	if (strcmp(buffer, "MSG_RETURNFLAG") == 0) {
+		return 27;
+	}
+	if (strcmp(buffer, "MSG_WHATISMYCOMMAND") == 0) {
+		return 28;
+	}
+	if (strcmp(buffer, "MSG_WHICHTEAM") == 0) {
+		return 29;
+	}
+	if (strcmp(buffer, "MSG_TASKPREFERENCE") == 0) {
+		return 30;
+	}
+	if (strcmp(buffer, "MSG_ATTACKENEMYBASE") == 0) {
+		return 31;
+	}
+	if (strcmp(buffer, "MSG_HARVEST") == 0) {
+		return 32;
+	}
+	if (strcmp(buffer, "MSG_SUICIDE") == 0) {
+		return 33;
+	}
+	if (strcmp(buffer, "MSG_ENEMYSUICIDE") == 0) {
+		return BOT_CHAT_CONTEXT_ENEMYSUICIDE;
+	}
+	if (strcmp(buffer, "MSG_HITTALKING") == 0) {
+		return BOT_CHAT_CONTEXT_HITTALKING;
+	}
+	if (strcmp(buffer, "MSG_HITNODEATH") == 0) {
+		return BOT_CHAT_CONTEXT_HITNODEATH;
+	}
+	if (strcmp(buffer, "MSG_HITNOKILL") == 0) {
+		return BOT_CHAT_CONTEXT_HITNOKILL;
+	}
+	if (strcmp(buffer, "MSG_RANDOM") == 0) {
+		return BOT_CHAT_CONTEXT_RANDOM;
+	}
+	if (strcmp(buffer, "MSG_INSULT") == 0) {
+		return BOT_CHAT_CONTEXT_INSULT;
+	}
+	if (strcmp(buffer, "MSG_PRAISE") == 0) {
+		return BOT_CHAT_CONTEXT_PRAISE;
+	}
+	return 0;
 }
-
 static size_t BotChat_SelectIndex(const char *seed, size_t count)
 {
     if (count == 0) {
@@ -2324,11 +2391,226 @@ int BotRemoveConsoleMessage(bot_chatstate_t *state, int type)
 
 size_t BotNumConsoleMessages(const bot_chatstate_t *state)
 {
-    if (state == NULL) {
-        return 0;
-    }
+	if (state == NULL) {
+		return 0;
+	}
 
-    return state->console_count;
+	return state->console_count;
+}
+
+/*
+=============
+BotChat_ConstructAndDispatchContext
+
+Selects, assembles, and emits a chat template for the provided context,
+queuing the constructed text before forwarding it to the bridge.
+=============
+*/
+static int BotChat_ConstructAndDispatchContext(bot_chatstate_t *state,
+		unsigned long context,
+		const char *seed,
+		int client,
+		int sendto,
+		const char *missing_context_message)
+{
+	if (state == NULL) {
+		return 0;
+	}
+
+	state->speaking_client = client;
+
+	if (!BotChat_EventAllowed(state, client, context, BotChat_CurrentTimeSeconds(state))) {
+		return 0;
+	}
+
+	bot_match_context_t *match_context = BotChat_FindMatchContext(state, context);
+	const char *template_text = BotChat_SelectRandomTemplate(state, match_context, seed);
+	if (template_text == NULL) {
+		if (missing_context_message != NULL) {
+			BotLib_Print(PRT_MESSAGE, "%s", missing_context_message);
+			BotQueueConsoleMessage(state, PRT_MESSAGE, missing_context_message);
+		}
+		return 0;
+	}
+
+	char message[BOT_CHAT_MAX_MESSAGE_CHARS];
+	if (!BotConstructChatMessage(state, context, template_text, message, sizeof(message))) {
+		return 0;
+	}
+
+	BotChat_DispatchMessage(state, message, client, sendto);
+	return 1;
+}
+
+/*
+=============
+BotChat_EnterGame
+
+Triggers the MSG_ENTERGAME match context through the shared construction
+helper and returns success when a message is dispatched.
+=============
+*/
+int BotChat_EnterGame(bot_chatstate_t *state, int client, int sendto)
+{
+	return BotChat_ConstructAndDispatchContext(state,
+			BOT_CHAT_CONTEXT_ENTERGAME,
+			state != NULL ? state->active_chatname : NULL,
+			client,
+			sendto,
+			"BotEnterChat: no templates loaded for enter game context\n");
+}
+
+/*
+=============
+BotChat_Kill
+
+Emits the MSG_KILL template after cooldown validation.
+=============
+*/
+int BotChat_Kill(bot_chatstate_t *state, int client, int sendto)
+{
+	return BotChat_ConstructAndDispatchContext(state,
+			BOT_CHAT_CONTEXT_KILL,
+			state != NULL ? state->active_chatname : NULL,
+			client,
+			sendto,
+			"BotChat_Kill: no templates loaded for kill context\n");
+}
+
+/*
+=============
+BotChat_Death
+
+Emits the MSG_DEATH template after cooldown validation.
+=============
+*/
+int BotChat_Death(bot_chatstate_t *state, int client, int sendto)
+{
+	return BotChat_ConstructAndDispatchContext(state,
+			BOT_CHAT_CONTEXT_DEATH,
+			state != NULL ? state->active_chatname : NULL,
+			client,
+			sendto,
+			"BotChat_Death: no templates loaded for death context\n");
+}
+
+/*
+=============
+BotChat_EnemySuicide
+
+Emits the MSG_ENEMYSUICIDE template after cooldown validation.
+=============
+*/
+int BotChat_EnemySuicide(bot_chatstate_t *state, int client, int sendto)
+{
+	return BotChat_ConstructAndDispatchContext(state,
+			BOT_CHAT_CONTEXT_ENEMYSUICIDE,
+			state != NULL ? state->active_chatname : NULL,
+			client,
+			sendto,
+			"BotChat_EnemySuicide: no templates loaded for enemy suicide context\n");
+}
+
+/*
+=============
+BotChat_HitTalking
+
+Emits the MSG_HITTALKING template after cooldown validation.
+=============
+*/
+int BotChat_HitTalking(bot_chatstate_t *state, int client, int sendto)
+{
+	return BotChat_ConstructAndDispatchContext(state,
+			BOT_CHAT_CONTEXT_HITTALKING,
+			state != NULL ? state->active_chatname : NULL,
+			client,
+			sendto,
+			"BotChat_HitTalking: no templates loaded for hit talking context\n");
+}
+
+/*
+=============
+BotChat_HitNoDeath
+
+Emits the MSG_HITNODEATH template after cooldown validation.
+=============
+*/
+int BotChat_HitNoDeath(bot_chatstate_t *state, int client, int sendto)
+{
+	return BotChat_ConstructAndDispatchContext(state,
+			BOT_CHAT_CONTEXT_HITNODEATH,
+			state != NULL ? state->active_chatname : NULL,
+			client,
+			sendto,
+			"BotChat_HitNoDeath: no templates loaded for hit no death context\n");
+}
+
+/*
+=============
+BotChat_HitNoKill
+
+Emits the MSG_HITNOKILL template after cooldown validation.
+=============
+*/
+int BotChat_HitNoKill(bot_chatstate_t *state, int client, int sendto)
+{
+	return BotChat_ConstructAndDispatchContext(state,
+			BOT_CHAT_CONTEXT_HITNOKILL,
+			state != NULL ? state->active_chatname : NULL,
+			client,
+			sendto,
+			"BotChat_HitNoKill: no templates loaded for hit no kill context\n");
+}
+
+/*
+=============
+BotChat_Random
+
+Emits the MSG_RANDOM template after cooldown validation.
+=============
+*/
+int BotChat_Random(bot_chatstate_t *state, int client, int sendto)
+{
+	return BotChat_ConstructAndDispatchContext(state,
+			BOT_CHAT_CONTEXT_RANDOM,
+			state != NULL ? state->active_chatname : NULL,
+			client,
+			sendto,
+			"BotChat_Random: no templates loaded for random context\n");
+}
+
+/*
+=============
+BotChat_Insult
+
+Emits the MSG_INSULT template after cooldown validation.
+=============
+*/
+int BotChat_Insult(bot_chatstate_t *state, int client, int sendto)
+{
+	return BotChat_ConstructAndDispatchContext(state,
+			BOT_CHAT_CONTEXT_INSULT,
+			state != NULL ? state->active_chatname : NULL,
+			client,
+			sendto,
+			"BotChat_Insult: no templates loaded for insult context\n");
+}
+
+/*
+=============
+BotChat_Praise
+
+Emits the MSG_PRAISE template after cooldown validation.
+=============
+*/
+int BotChat_Praise(bot_chatstate_t *state, int client, int sendto)
+{
+	return BotChat_ConstructAndDispatchContext(state,
+			BOT_CHAT_CONTEXT_PRAISE,
+			state != NULL ? state->active_chatname : NULL,
+			client,
+			sendto,
+			"BotChat_Praise: no templates loaded for praise context\n");
 }
 
 /*
@@ -2340,35 +2622,7 @@ Builds and dispatches the MSG_ENTERGAME template while respecting cooldowns.
 */
 void BotEnterChat(bot_chatstate_t *state, int client, int sendto)
 {
-if (state == NULL)
-{
-return;
-}
-
-state->speaking_client = client;
-
-const unsigned long context = 2;
-if (!BotChat_EventAllowed(state, client, context, BotChat_CurrentTimeSeconds(state)))
-{
-return;
-}
-
-	bot_match_context_t *match_context = BotChat_FindMatchContext(state, context);
-	const char *template_text = BotChat_SelectRandomTemplate(state,
-			match_context,
-			state->active_chatname);
-	if (template_text == NULL)
-	{
-		BotLib_Print(PRT_MESSAGE,
-			"BotEnterChat: no templates loaded for enter game context\n");
-		return;
-	}
-
-	char message[BOT_CHAT_MAX_MESSAGE_CHARS];
-	if (BotConstructChatMessage(state, context, template_text, message, sizeof(message)))
-	{
-		BotChat_DispatchMessage(state, message, client, sendto);
-	}
+	BotChat_EnterGame(state, client, sendto);
 }
 
 /*
