@@ -878,19 +878,86 @@ Verifies BotSettings enforces the library guard before use.
 */
 static void test_bot_settings_requires_library(void **state)
 {
-	bot_interface_test_context_t *context = (bot_interface_test_context_t *)*state;
+bot_interface_test_context_t *context = (bot_interface_test_context_t *)*state;
 
-	Mock_Reset(&context->mock);
-	Mock_ClearPrints(&context->mock);
+Mock_Reset(&context->mock);
+Mock_ClearPrints(&context->mock);
 
-	bot_settings_t settings;
-	memset(&settings, 0x7f, sizeof(settings));
+bot_settings_t settings;
+memset(&settings, 0x7f, sizeof(settings));
 
-	int status = context->api->BotSettings(1, &settings);
-	assert_int_equal(status, BLERR_LIBRARYNOTSETUP);
-	Mock_AssertPrintContains(&context->mock,
-	                         "BotSettings: library not initialised",
-	                         PRT_ERROR);
+int status = context->api->BotSettings(1, &settings);
+assert_int_equal(status, BLERR_LIBRARYNOTSETUP);
+Mock_AssertPrintContains(&context->mock,
+ "BotSettings: library not initialised",
+ PRT_ERROR);
+}
+
+/*
+=============
+test_weight_exports_cover_guards_and_round_trip
+
+Validates the weight export guard path, malformed filename handling, and
+round-trip serialisation through BotWriteWeights using the reference contract
+diagnostics.
+=============
+*/
+static void test_weight_exports_cover_guards_and_round_trip(void **state)
+{
+bot_interface_test_context_t *context = (bot_interface_test_context_t *)*state;
+
+Mock_Reset(&context->mock);
+
+int handle = context->api->BotAllocWeightConfig();
+assert_int_equal(handle, 0);
+
+const botlib_contract_export_t *guard =
+BotlibContract_FindExport(&context->catalogue, "GuardLibrarySetup");
+assert_non_null(guard);
+const botlib_contract_scenario_t *failure =
+BotlibContract_FindScenario(guard, "failure");
+assert_non_null(failure);
+const botlib_contract_message_t *guard_message =
+BotlibContract_FindMessageWithSeverity(failure, context->mock.prints[0].type);
+assert_non_null(guard_message);
+
+char expected_guard[1024];
+snprintf(expected_guard, sizeof(expected_guard), guard_message->text, "BotAllocWeightConfig");
+assert_string_equal(context->mock.prints[0].message, expected_guard);
+
+int status = context->api->BotSetupLibrary();
+assert_int_equal(status, BLERR_NOERROR);
+
+handle = context->api->BotAllocWeightConfig();
+assert_true(handle > 0);
+Mock_ClearPrints(&context->mock);
+
+status = context->api->BotLoadWeights(handle, NULL);
+assert_int_equal(status, 0);
+Mock_AssertPrintContains(&context->mock, "BotLoadWeights: filename required", PRT_ERROR);
+
+Mock_ClearPrints(&context->mock);
+status = context->api->BotLoadWeights(handle, "items.c");
+assert_int_equal(status, 1);
+
+char out_path[PATH_MAX];
+snprintf(out_path, sizeof(out_path), "%s/tests_weight_roundtrip.c", context->assets.asset_root);
+unlink(out_path);
+
+status = context->api->BotWriteWeights(handle, out_path);
+assert_int_equal(status, 1);
+Mock_AssertPrintContains(&context->mock, "written succesfully", PRT_MESSAGE);
+
+FILE *round_trip = fopen(out_path, "rb");
+assert_non_null(round_trip);
+
+char buffer[64];
+size_t read_bytes = fread(buffer, 1, sizeof(buffer), round_trip);
+fclose(round_trip);
+assert_true(read_bytes > 0);
+
+context->api->BotFreeWeightConfig(handle);
+unlink(out_path);
 }
 
 /*
@@ -2055,12 +2122,15 @@ int main(void)
 	cmocka_unit_test_setup_teardown(test_bot_client_settings_requires_library,
 				setup_bot_interface,
 				teardown_bot_interface),
-	cmocka_unit_test_setup_teardown(test_bot_settings_requires_library,
-				setup_bot_interface,
-				teardown_bot_interface),
-	cmocka_unit_test_setup_teardown(test_bot_test_debug_draw_toggles_bridge,
-				setup_bot_interface,
-				teardown_bot_interface),
+        cmocka_unit_test_setup_teardown(test_bot_settings_requires_library,
+                                setup_bot_interface,
+                                teardown_bot_interface),
+        cmocka_unit_test_setup_teardown(test_weight_exports_cover_guards_and_round_trip,
+                                setup_bot_interface,
+                                teardown_bot_interface),
+        cmocka_unit_test_setup_teardown(test_bot_test_debug_draw_toggles_bridge,
+                                setup_bot_interface,
+                                teardown_bot_interface),
 	cmocka_unit_test_setup_teardown(test_bot_load_map_and_sensory_queues,
 				setup_bot_interface,
 				teardown_bot_interface),
