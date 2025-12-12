@@ -78,6 +78,12 @@ typedef struct {
     double next_allowed_time;
 } bot_chat_cooldown_entry_t;
 
+typedef struct {
+	const char *name;
+	const char *const *entries;
+	size_t entry_count;
+} bot_chat_random_table_t;
+
 /*
 =============
 BotChat_PrintLegacyDiagnostic
@@ -278,8 +284,8 @@ Picks a template from the context using the hashing helper.
 */
 static size_t BotChat_SelectIndex(const char *seed, size_t count);
 static const char *BotChat_SelectRandomTemplate(const bot_chatstate_t *state,
-const bot_match_context_t *context,
-const char *seed)
+	const bot_match_context_t *context,
+	const char *seed)
 {
 	(void)state;
 	if (context == NULL || context->template_count == 0)
@@ -357,8 +363,8 @@ Locates the synonym context whose suffix matches the provided identifier.
 =============
 */
 static const bot_synonym_context_t *BotChat_FindSynonymContextByToken(
-const bot_chatstate_t *state,
-const char *token)
+	const bot_chatstate_t *state,
+	const char *token)
 {
 	if (state == NULL || token == NULL)
 	{
@@ -413,10 +419,10 @@ after the supplied index.
 =============
 */
 static int BotChat_MessageContainsPhrase(
-const char message_tokens[][BOT_CHAT_MAX_TOKEN_CHARS],
+	const char message_tokens[][BOT_CHAT_MAX_TOKEN_CHARS],
 size_t message_count,
 size_t start_index,
-const char phrase_tokens[][BOT_CHAT_MAX_TOKEN_CHARS],
+	const char phrase_tokens[][BOT_CHAT_MAX_TOKEN_CHARS],
 size_t phrase_count,
 size_t *next_index)
 {
@@ -457,8 +463,8 @@ Returns non-zero when the supplied message satisfies the match template.
 =============
 */
 static int BotChat_TemplateMatchesMessage(const bot_chatstate_t *state,
-const char *template_text,
-const char *message)
+	const char *template_text,
+	const char *message)
 {
 	char template_tokens[BOT_CHAT_MAX_TOKENS][BOT_CHAT_MAX_TOKEN_CHARS];
 	char message_tokens[BOT_CHAT_MAX_TOKENS][BOT_CHAT_MAX_TOKEN_CHARS];
@@ -560,23 +566,176 @@ Checks if a referenced random table identifier is recognised.
 static int BotChat_RandomStringKnown(const char *name)
 {
 	static const char *kKnownRandomTables[] = {
-		"random_misc",
-		"random_insult"
+	"random_misc",
+	"random_insult"
 	};
 	if (name == NULL)
 	{
-		return 0;
+	return 0;
 	}
-
+	
 	for (size_t i = 0; i < sizeof(kKnownRandomTables) / sizeof(kKnownRandomTables[0]); ++i)
 	{
-		if (strcmp(kKnownRandomTables[i], name) == 0)
-		{
-			return 1;
-		}
+	if (strcmp(kKnownRandomTables[i], name) == 0)
+	{
+	return 1;
+	}
 	}
 	return 0;
+	}
+
+static const char *const kBotChatRandomMisc[] = {
+	"woohoo",
+	"whoopass",
+	"hmmmm"
+};
+
+static const char *const kBotChatRandomInsult[] = {
+	"lamer",
+	"loser",
+	"sucker"
+};
+
+static const bot_chat_random_table_t kBotChatRandomTables[] = {
+	{ "random_misc", kBotChatRandomMisc, sizeof(kBotChatRandomMisc) / sizeof(kBotChatRandomMisc[0]) },
+	{ "random_insult", kBotChatRandomInsult, sizeof(kBotChatRandomInsult) / sizeof(kBotChatRandomInsult[0]) }
+};
+
+/*
+=============
+BotChat_FindRandomTable
+
+Looks up a built-in random string table by name.
+=============
+*/
+static const bot_chat_random_table_t *BotChat_FindRandomTable(const char *name)
+{
+	if (name == NULL)
+	{
+	return NULL;
+	}
+	
+	for (size_t i = 0; i < sizeof(kBotChatRandomTables) / sizeof(kBotChatRandomTables[0]); ++i)
+	{
+	if (strcmp(kBotChatRandomTables[i].name, name) == 0)
+	{
+	return &kBotChatRandomTables[i];
+	}
+	}
+	
+	return NULL;
+	}
+
+/*
+=============
+BotChat_SelectRandomFromTable
+
+Chooses a random entry from the provided random string table.
+=============
+*/
+static const char *BotChat_SelectRandomFromTable(const bot_chat_random_table_t *table)
+	{
+	if (table == NULL || table->entries == NULL || table->entry_count == 0)
+	{
+	return NULL;
+	}
+	
+	size_t index = (size_t)(rand() % table->entry_count);
+	return table->entries[index];
+	}
+	
+/*
+=============
+BotChat_SelectWeightedSynonym
+
+Returns a synonym from the specified context using weighted selection.
+=============
+*/
+static const char *BotChat_SelectWeightedSynonym(const bot_synonym_context_t *context)
+	{
+	if (context == NULL)
+	{
+	return NULL;
+	}
+
+	double total_weight = 0.0;
+	for (size_t group_index = 0; group_index < context->group_count; ++group_index)
+	{
+	const bot_synonym_group_t *group = &context->groups[group_index];
+	for (size_t phrase_index = 0; phrase_index < group->phrase_count; ++phrase_index)
+	{
+	const bot_synonym_phrase_t *phrase = &group->phrases[phrase_index];
+	if (phrase->text == NULL)
+	{
+	continue;
+	}
+
+	double weight = phrase->weight;
+	if (weight <= 0.0)
+	{
+	weight = 1.0;
+	}
+	total_weight += weight;
+	}
+	}
+
+	if (total_weight <= 0.0)
+	{
+	return NULL;
+	}
+
+	double roll = ((double)rand() / ((double)RAND_MAX + 1.0)) * total_weight;
+	for (size_t group_index = 0; group_index < context->group_count; ++group_index)
+	{
+	const bot_synonym_group_t *group = &context->groups[group_index];
+	for (size_t phrase_index = 0; phrase_index < group->phrase_count; ++phrase_index)
+	{
+	const bot_synonym_phrase_t *phrase = &group->phrases[phrase_index];
+	if (phrase->text == NULL)
+	{
+	continue;
+	}
+
+	double weight = phrase->weight;
+	if (weight <= 0.0)
+	{
+	weight = 1.0;
+	}
+	if (roll < weight)
+	{
+	return phrase->text;
+	}
+	roll -= weight;
+	}
+	}
+
+return NULL;
 }
+
+/*
+=============
+BotChat_SelectRandomString
+
+Expands a random string reference using synonym contexts or built-in tables.
+=============
+*/
+static const char *BotChat_SelectRandomString(const bot_chatstate_t *state, const char *name)
+	{
+	const bot_synonym_context_t *context = BotChat_FindSynonymContextByToken(state, name);
+	const char *selection = BotChat_SelectWeightedSynonym(context);
+	if (selection != NULL)
+	{
+	return selection;
+	}
+
+	const bot_chat_random_table_t *table = BotChat_FindRandomTable(name);
+	if (table != NULL)
+	{
+	return BotChat_SelectRandomFromTable(table);
+	}
+
+	return NULL;
+	}
 
 static void BotChat_ResetConsoleQueue(bot_chatstate_t *state)
 {
@@ -1687,66 +1846,97 @@ size_t out_size)
 {
 	if (state == NULL || template_text == NULL || out_message == NULL || out_size == 0U)
 	{
-		return 0;
+	return 0;
 	}
 
 	const size_t max_length = BOT_CHAT_MAX_MESSAGE_CHARS - 1;
 	const size_t template_length = strlen(template_text);
 	if (template_length > max_length)
 	{
-		BotLib_Print(PRT_ERROR, "BotConstructChat: message \"%s\" too long\n", template_text);
-		return 0;
+	BotLib_Print(PRT_ERROR, "BotConstructChat: message \"%s\" too long\n", template_text);
+	return 0;
 	}
 
-	for (size_t i = 0; template_text[i] != '\0'; ++i)
+	char assembled[BOT_CHAT_MAX_MESSAGE_CHARS];
+	size_t assembled_length = 0;
+
+	for (size_t i = 0; template_text[i] != '\0';)
 	{
-		if (template_text[i] != '\\')
-		{
-			continue;
-		}
-		const char escape = template_text[i + 1];
-		if (escape == '\0')
-		{
-			BotLib_Print(PRT_ERROR, "BotConstructChat: message \"%s\" invalid escape char\n", template_text);
-			return 0;
-		}
-		if (escape != 'r')
-		{
-			continue;
-		}
-		size_t start_index = i + 2;
-		size_t end_index = start_index;
-		while (template_text[end_index] != '\0' && template_text[end_index] != '\\')
-		{
-			++end_index;
-		}
-		if (template_text[end_index] != '\\')
-		{
-			BotLib_Print(PRT_ERROR, "BotConstructChat: message \"%s\" invalid escape char\n", template_text);
-			return 0;
-		}
-		size_t name_length = end_index - start_index;
-		if (name_length == 0)
-		{
-			BotLib_Print(PRT_ERROR, "BotConstructChat: unknown random string %s\n", "<empty>");
-			return 0;
-		}
-		char random_name[64];
-		if (name_length >= sizeof(random_name))
-		{
-			name_length = sizeof(random_name) - 1;
-		}
-		memcpy(random_name, template_text + start_index, name_length);
-		random_name[name_length] = '\0';
-		if (!BotChat_RandomStringKnown(random_name))
-		{
-			BotLib_Print(PRT_ERROR, "BotConstructChat: unknown random string %s\n", random_name);
-			return 0;
-		}
-		i = end_index;
+	if (template_text[i] != '\\')
+	{
+	if (assembled_length >= max_length)
+	{
+	BotLib_Print(PRT_ERROR, "BotConstructChat: message \"%s\" too long\n", template_text);
+	return 0;
+	}
+	assembled[assembled_length++] = template_text[i++];
+	continue;
 	}
 
-	strncpy(out_message, template_text, out_size - 1U);
+	const char escape = template_text[i + 1];
+	if (escape == '\0' || escape != 'r')
+	{
+	BotLib_Print(PRT_ERROR, "BotConstructChat: message \"%s\" invalid escape char\n", template_text);
+	return 0;
+	}
+
+	size_t start_index = i + 2;
+	size_t end_index = start_index;
+	while (template_text[end_index] != '\0' && template_text[end_index] != '\\')
+	{
+	++end_index;
+	}
+	if (template_text[end_index] != '\\')
+	{
+	BotLib_Print(PRT_ERROR, "BotConstructChat: message \"%s\" invalid escape char\n", template_text);
+	return 0;
+	}
+
+	size_t name_length = end_index - start_index;
+	if (name_length == 0)
+	{
+	BotLib_Print(PRT_ERROR, "BotConstructChat: unknown random string %s\n", "<empty>");
+	return 0;
+	}
+	char random_name[64];
+	if (name_length >= sizeof(random_name))
+	{
+	name_length = sizeof(random_name) - 1;
+	}
+	memcpy(random_name, template_text + start_index, name_length);
+	random_name[name_length] = '\0';
+	if (!BotChat_RandomStringKnown(random_name))
+	{
+	BotLib_Print(PRT_ERROR, "BotConstructChat: unknown random string %s\n", random_name);
+	return 0;
+	}
+
+	const char *replacement = BotChat_SelectRandomString(state, random_name);
+	if (replacement == NULL)
+	{
+	BotLib_Print(PRT_ERROR, "BotConstructChat: unknown random string %s\n", random_name);
+	return 0;
+	}
+
+	size_t replacement_length = strlen(replacement);
+	if (assembled_length + replacement_length > max_length)
+	{
+	BotLib_Print(PRT_ERROR, "BotConstructChat: message \"%s\" too long\n", template_text);
+	return 0;
+	}
+	if (assembled_length + replacement_length >= out_size)
+	{
+	BotLib_Print(PRT_ERROR, "BotConstructChat: message \"%s\" too long\n", template_text);
+	return 0;
+	}
+
+	memcpy(assembled + assembled_length, replacement, replacement_length);
+	assembled_length += replacement_length;
+	i = end_index + 1;
+	}
+
+	assembled[assembled_length] = '\0';
+	strncpy(out_message, assembled, out_size - 1U);
 	out_message[out_size - 1U] = '\0';
 	BotQueueConsoleMessage(state, (int)context, out_message);
 	return 1;
@@ -1761,7 +1951,7 @@ the console queue used for diagnostics.
 =============
 */
 static void BotChat_DispatchMessage(bot_chatstate_t *state,
-const char *message,
+	const char *message,
 int client,
 int sendto)
 {
