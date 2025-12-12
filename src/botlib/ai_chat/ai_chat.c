@@ -1432,12 +1432,12 @@ static int BotChat_ParseReplyBlock(bot_chatstate_t *state, pc_script_t *script)
 
 /*
 =============
-BotChat_ParseMatchAndReplyPass
+BotChat_ParseMatchPass
 
-Second parsing pass that walks match blocks and reply definitions.
+Parses match contexts while skipping reply definitions.
 =============
 */
-static int BotChat_ParseMatchAndReplyPass(bot_chatstate_t *state)
+static int BotChat_ParseMatchPass(bot_chatstate_t *state)
 {
 	if (state == NULL || state->active_script == NULL)
 	{
@@ -1461,6 +1461,42 @@ static int BotChat_ParseMatchAndReplyPass(bot_chatstate_t *state)
 		}
 		if (token.type == TT_PUNCTUATION && token.string[0] == '[')
 		{
+			if (!BotChat_SkipBalancedBlock(state->active_script, '[', ']'))
+			{
+				return 0;
+			}
+		}
+	}
+	return 1;
+}
+
+/*
+=============
+BotChat_ParseReplyPass
+
+Parses reply contexts while skipping match definitions.
+=============
+*/
+static int BotChat_ParseReplyPass(bot_chatstate_t *state)
+{
+	if (state == NULL || state->active_script == NULL)
+	{
+		return 0;
+	}
+	ResetScript(state->active_script);
+	pc_token_t token;
+	while (PS_ReadToken(state->active_script, &token))
+	{
+		if (token.type == TT_NAME && strncmp(token.string, "MTCONTEXT_", 10) == 0)
+		{
+			if (!BotChat_SkipBalancedBlock(state->active_script, '{', '}'))
+			{
+				return 0;
+			}
+			continue;
+		}
+		if (token.type == TT_PUNCTUATION && token.string[0] == '[')
+		{
 			if (!BotChat_ParseReplyBlock(state, state->active_script))
 			{
 				return 0;
@@ -1472,18 +1508,34 @@ static int BotChat_ParseMatchAndReplyPass(bot_chatstate_t *state)
 
 /*
 =============
-BotChat_ParseActiveScript
+BotChat_ParseInitialChat
 
-Runs the two parsing passes required to populate the chat state.
+Runs the parsing passes required for initial chat data.
 =============
 */
-static int BotChat_ParseActiveScript(bot_chatstate_t *state)
+static int BotChat_ParseInitialChat(bot_chatstate_t *state)
 {
 	if (!BotChat_ParseSynonymContexts(state))
 	{
 		return 0;
 	}
-	if (!BotChat_ParseMatchAndReplyPass(state))
+	if (!BotChat_ParseMatchPass(state))
+	{
+		return 0;
+	}
+	return 1;
+}
+
+/*
+=============
+BotChat_ParseReplyChats
+
+Parses reply tables from the active chat script.
+=============
+*/
+static int BotChat_ParseReplyChats(bot_chatstate_t *state)
+{
+	if (!BotChat_ParseReplyPass(state))
 	{
 		return 0;
 	}
@@ -1578,14 +1630,26 @@ int BotLoadChatFile(bot_chatstate_t *state, const char *chatfile, const char *ch
 	state->active_source = source;
 	state->active_script = script;
 
-	if (!BotChat_ParseActiveScript(state))
+	if (!BotChat_ParseInitialChat(state))
 	{
 		BotChat_PrintLegacyDiagnostic(state,
-			PRT_ERROR,
-			fastchat_enabled,
-			"couldn't load chat %s from %s\n",
-			chatname,
-			chatfile);
+				PRT_ERROR,
+				fastchat_enabled,
+				"couldn't find chat %s in %s\n",
+				chatname,
+				chatfile);
+		BotFreeChatFile(state);
+		return 0;
+	}
+
+	if (!BotChat_ParseReplyChats(state))
+	{
+		BotChat_PrintLegacyDiagnostic(state,
+				PRT_ERROR,
+				fastchat_enabled,
+				"couldn't load chat %s from %s\n",
+				chatname,
+				chatfile);
 		BotFreeChatFile(state);
 		return 0;
 	}
