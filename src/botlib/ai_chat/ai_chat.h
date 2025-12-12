@@ -68,6 +68,17 @@ double cooldown_seconds);
  */
 void BotEnterChat(bot_chatstate_t *state, int client, int sendto);
 
+int BotChat_EnterGame(bot_chatstate_t *state, int client, int sendto);
+int BotChat_Kill(bot_chatstate_t *state, int client, int sendto);
+int BotChat_Death(bot_chatstate_t *state, int client, int sendto);
+int BotChat_EnemySuicide(bot_chatstate_t *state, int client, int sendto);
+int BotChat_HitTalking(bot_chatstate_t *state, int client, int sendto);
+int BotChat_HitNoDeath(bot_chatstate_t *state, int client, int sendto);
+int BotChat_HitNoKill(bot_chatstate_t *state, int client, int sendto);
+int BotChat_Random(bot_chatstate_t *state, int client, int sendto);
+int BotChat_Insult(bot_chatstate_t *state, int client, int sendto);
+int BotChat_Praise(bot_chatstate_t *state, int client, int sendto);
+
 /**
  * Placeholder for scripted replies. The return value mirrors Quake III's API:
  * non-zero indicates a reply was constructed.
