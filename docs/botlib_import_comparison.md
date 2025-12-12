@@ -16,26 +16,41 @@ The disassembly of `gladiator.dll` shows that the bot library copies a 0x28-byte
 
 These uses align with the Quake II `bot_import_t` expectations (BotInput, BotClientCommand, Print, Trace, PointContents, GetMemory, FreeMemory, DebugLineCreate/Draw primitives), though the DLL only appears to populate ten entries rather than the full sixteen defined by the Quake headers.
 
+### Expected slot order and signatures inferred from HLIL
+
+| Slot | Observed use | Inferred prototype |
+| --- | --- | --- |
+| 0 | Client data feed | `void (*BotInput)(int client, bot_input_t *bi);` |
+| 1 | Console command emission | `void (*BotClientCommand)(int client, char *str, ...);` |
+| 2 | Logging | `void (*Print)(int type, const char *fmt, ...);` |
+| 3 | BSP trace | `bsp_trace_t (*Trace)(vec3_t start, vec3_t mins, vec3_t maxs, vec3_t end, int passent, int contentmask);` |
+| 4 | Point contents | `int (*PointContents)(vec3_t point);` |
+| 5 | Allocator | `void *(*GetMemory)(int size);` |
+| 6 | Free | `void (*FreeMemory)(void *ptr);` |
+| 7 | Handle generator | `int (*DebugLineCreate)(void);` |
+
 ## Quake II botlib import surface
 
 The Quake II `bot_import_t` declares sixteen callbacks that the engine should expose to the botlib:
 
-1. `void (*BotInput)(int client, bot_input_t *bi);`
-2. `void (*BotClientCommand)(int client, char *str, ...);`
-3. `void (*Print)(int type, char *fmt, ...);`
-4. `cvar_t *(*CvarGet)(const char *name, const char *default_value, int flags);`
-5. `void (*Error)(const char *fmt, ...);`
-6. `bsp_trace_t (*Trace)(vec3_t start, vec3_t mins, vec3_t maxs, vec3_t end, int passent, int contentmask);`
-7. `int (*PointContents)(vec3_t point);`
-8. `void *(*GetMemory)(int size);`
-9. `void (*FreeMemory)(void *ptr);`
-10. `int (*DebugLineCreate)(void);`
-11. `void (*DebugLineDelete)(int line);`
-12. `void (*DebugLineShow)(int line, vec3_t start, vec3_t end, int color);`
-13. `void (*AddCommand)(const char *name, void (*function)(void));`
-14. `void (*RemoveCommand)(const char *name);`
-15. `int (*CmdArgc)(void);`
-16. `const char *(*CmdArgv)(int index);`
+| Order | Callback | Signature |
+| --- | --- | --- |
+| 0 | BotInput | `void (*BotInput)(int client, bot_input_t *bi);` |
+| 1 | BotClientCommand | `void (*BotClientCommand)(int client, char *str, ...);` |
+| 2 | Print | `void (*Print)(int type, char *fmt, ...);` |
+| 3 | Trace | `bsp_trace_t (*Trace)(vec3_t start, vec3_t mins, vec3_t maxs, vec3_t end, int passent, int contentmask);` |
+| 4 | PointContents | `int (*PointContents)(vec3_t point);` |
+| 5 | GetMemory | `void *(*GetMemory)(int size);` |
+| 6 | FreeMemory | `void (*FreeMemory)(void *ptr);` |
+| 7 | DebugLineCreate | `int (*DebugLineCreate)(void);` |
+| 8 | DebugLineDelete | `void (*DebugLineDelete)(int line);` |
+| 9 | DebugLineShow | `void (*DebugLineShow)(int line, vec3_t start, vec3_t end, int color);` |
+| 10 | AddCommand | `void (*AddCommand)(const char *name, void (*function)(void));` |
+| 11 | RemoveCommand | `void (*RemoveCommand)(const char *name);` |
+| 12 | CmdArgc | `int (*CmdArgc)(void);` |
+| 13 | CmdArgv | `const char *(*CmdArgv)(int index);` |
+| 14 | CvarGet | `cvar_t *(*CvarGet)(const char *name, const char *default_value, int flags);` |
+| 15 | Error | `void (*Error)(const char *fmt, ...);` |
 
 ## Current `botlib_import_table_t`
 
@@ -59,8 +74,3 @@ The in-repo mirror only exposes eight callbacks:
 | Quake II `bot_import_t` (16) | AddCommand, RemoveCommand, CmdArgc, CmdArgv, Print | BotInput, BotClientCommand, CvarGet, Error, Trace, PointContents, GetMemory, FreeMemory, DebugLineCreate, DebugLineDelete, DebugLineShow | Full surface exceeds current table size. |
 | Gladiator DLL HLIL (≈10 slots) | Logging (Print), command invocation slot, trace, point-contents probe, memory alloc/free, handle generator; plus an initial slot used for per-client input | No explicit CvarGet/Error/debug line hooks observed; table length suggests only ten imports consumed | Import order matches the early subset of Quake II’s table, reinforcing which entries should be restored. |
 | Repo `botlib_import_table_t` (8) | Print, DPrint, BotLibVarGet/BotLibVarSet, AddCommand, RemoveCommand, CmdArgc, CmdArgv | All Quake II engine-facing hooks (BotInput, BotClientCommand, CvarGet, Error, Trace, PointContents, GetMemory, FreeMemory, DebugLineCreate/Delete/Show) | Structure shape and naming diverge from both the DLL and the Quake header. |
-
-### Recommendations for alignment
-
-- Expand `botlib_import_table_t` to include the missing Quake II callbacks so that the struct size matches the 0x28-byte block consumed by the original DLL and the full sixteen-entry contract defined in `bot_import_t`.
-- Retain `DPrint`/libvar helpers as Gladiator-specific extensions but append them after the Quake-aligned fields to preserve ordering for engine compatibility.
