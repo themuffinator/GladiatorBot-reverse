@@ -46,21 +46,59 @@ typedef struct captured_print_s
 
 typedef struct mock_bot_import_s
 {
-    bot_import_t table;
-    captured_print_t prints[128];
-    size_t print_count;
-    bot_input_t inputs[64];
-    int input_clients[64];
-    size_t bot_input_count;
-    struct
-    {
-        char name[64];
-        void (*function)(void);
-    } commands[16];
-    size_t command_count;
-    char *command_args[16];
-    int command_argc;
+	bot_import_t table;
+	captured_print_t prints[128];
+	size_t print_count;
+	bot_input_t inputs[64];
+	int input_clients[64];
+	size_t bot_input_count;
+	struct
+	{
+		char name[64];
+		void (*function)(void);
+	} commands[16];
+	size_t command_count;
+	char *command_args[16];
+	int command_argc;
 } mock_bot_import_t;
+
+typedef struct import_field_descriptor_s
+{
+	const char *name;
+	size_t offset;
+} import_field_descriptor_t;
+
+static const char *g_retail_import_symbols[] = {
+	"BotInput",
+	"BotClientCommand",
+	"Print",
+	"Trace",
+	"PointContents",
+	"GetMemory",
+	"FreeMemory",
+	"DebugLineCreate",
+	"DebugLineDelete",
+	"DebugLineShow",
+};
+
+static const import_field_descriptor_t g_import_field_layout[] = {
+	{ "BotInput", offsetof(bot_import_t, BotInput) },
+	{ "BotClientCommand", offsetof(bot_import_t, BotClientCommand) },
+	{ "Print", offsetof(bot_import_t, Print) },
+	{ "CvarGet", offsetof(bot_import_t, CvarGet) },
+	{ "Error", offsetof(bot_import_t, Error) },
+	{ "Trace", offsetof(bot_import_t, Trace) },
+	{ "PointContents", offsetof(bot_import_t, PointContents) },
+	{ "GetMemory", offsetof(bot_import_t, GetMemory) },
+	{ "FreeMemory", offsetof(bot_import_t, FreeMemory) },
+	{ "DebugLineCreate", offsetof(bot_import_t, DebugLineCreate) },
+	{ "DebugLineDelete", offsetof(bot_import_t, DebugLineDelete) },
+	{ "DebugLineShow", offsetof(bot_import_t, DebugLineShow) },
+	{ "AddCommand", offsetof(bot_import_t, AddCommand) },
+	{ "RemoveCommand", offsetof(bot_import_t, RemoveCommand) },
+	{ "CmdArgc", offsetof(bot_import_t, CmdArgc) },
+	{ "CmdArgv", offsetof(bot_import_t, CmdArgv) },
+};
 
 typedef struct bot_interface_test_context_s
 {
@@ -74,9 +112,74 @@ typedef struct bot_interface_test_context_s
 static mock_bot_import_t *g_active_mock = NULL;
 static int g_mock_import_libvar_set_status = BLERR_NOERROR;
 
+/*
+=============
+test_import_table_matches_retail_symbol_list
+
+Ensures the current bridge import table layout mirrors the retail DLL
+symbol order and flags deviations for missing or additional slots.
+=============
+*/
+static void test_import_table_matches_retail_symbol_list(void **state)
+{
+	(void)state;
+
+	size_t expected_count = ARRAY_LEN(g_retail_import_symbols);
+	size_t actual_count = ARRAY_LEN(g_import_field_layout);
+	size_t expected_index = 0;
+	size_t deviation_count = 0;
+
+	if (actual_count < expected_count)
+	{
+		fail_msg("Import table is missing %zu retail slots", expected_count - actual_count);
+	}
+
+	for (size_t i = 0; i < actual_count && expected_index < expected_count; ++i)
+	{
+		const import_field_descriptor_t *field = &g_import_field_layout[i];
+		if (strcmp(field->name, g_retail_import_symbols[expected_index]) != 0)
+		{
+			continue;
+		}
+
+		size_t expected_offset = expected_index * sizeof(void (*)(void));
+		if (field->offset != expected_offset)
+		{
+			print_message("import parity: '%s' offset %zu diverges from retail slot %zu\n",
+			              field->name,
+			              field->offset,
+			              expected_offset);
+			deviation_count += 1U;
+		}
+
+		expected_index += 1U;
+	}
+
+	if (expected_index != expected_count)
+	{
+		fail_msg("Import table missing expected retail symbol '%s' at slot %zu",
+		         g_retail_import_symbols[expected_index],
+		         expected_index);
+	}
+
+	if (actual_count > expected_count)
+	{
+		print_message("import parity: %zu additional slots beyond retail reference detected\n",
+		             actual_count - expected_count);
+	}
+
+	if (deviation_count == 0)
+	{
+		print_message("import parity: retail symbol order preserved across %zu entries\n",
+		             expected_count);
+	}
+}
+
+
+
 static void Mock_Print(int type, char *fmt, ...)
 {
-    if (g_active_mock == NULL || fmt == NULL)
+if (g_active_mock == NULL || fmt == NULL)
     {
         return;
     }
@@ -2097,75 +2200,75 @@ static void test_bot_start_frame_updates_routing_diagnostics(void **state)
 
 int main(void)
 {
-    const struct CMUnitTest tests[] = {
-	cmocka_unit_test_setup_teardown(test_console_commands_register,
-				setup_bot_interface,
-				teardown_bot_interface),
-	cmocka_unit_test_setup_teardown(test_console_commands_invoke,
-				setup_bot_interface,
-				teardown_bot_interface),
-	cmocka_unit_test_setup_teardown(test_bot_load_map_requires_library,
-				setup_bot_interface,
-				teardown_bot_interface),
-	cmocka_unit_test_setup_teardown(test_bot_setup_library_guard_emits_message,
-				setup_bot_interface,
-				teardown_bot_interface),
-	cmocka_unit_test_setup_teardown(test_bot_shutdown_library_guard_emits_message,
-				setup_bot_interface,
-				teardown_bot_interface),
-	cmocka_unit_test_setup_teardown(test_bot_shutdown_client_requires_library,
-				setup_bot_interface,
-				teardown_bot_interface),
-	cmocka_unit_test_setup_teardown(test_bot_move_client_requires_library,
-				setup_bot_interface,
-				teardown_bot_interface),
-	cmocka_unit_test_setup_teardown(test_bot_client_settings_requires_library,
-				setup_bot_interface,
-				teardown_bot_interface),
-        cmocka_unit_test_setup_teardown(test_bot_settings_requires_library,
-                                setup_bot_interface,
-                                teardown_bot_interface),
-        cmocka_unit_test_setup_teardown(test_weight_exports_cover_guards_and_round_trip,
-                                setup_bot_interface,
-                                teardown_bot_interface),
-        cmocka_unit_test_setup_teardown(test_bot_test_debug_draw_toggles_bridge,
-                                setup_bot_interface,
-                                teardown_bot_interface),
-	cmocka_unit_test_setup_teardown(test_bot_load_map_and_sensory_queues,
-				setup_bot_interface,
-				teardown_bot_interface),
-	cmocka_unit_test_setup_teardown(test_bot_usehook_defaults_disabled,
-				setup_bot_interface,
-				teardown_bot_interface),
-	cmocka_unit_test_setup_teardown(test_bot_console_message_and_ai_pipeline,
-				setup_bot_interface,
-				teardown_bot_interface),
-	cmocka_unit_test_setup_teardown(test_bot_lib_var_set_propagates_import_status,
-				setup_bot_interface,
-				teardown_bot_interface),
-	cmocka_unit_test_setup_teardown(test_bot_lib_var_cache_tracks_updates,
-				setup_bot_interface,
-				teardown_bot_interface),
-	cmocka_unit_test_setup_teardown(test_bot_update_entity_populates_aas,
-				setup_bot_interface,
-				teardown_bot_interface),
-	cmocka_unit_test_setup_teardown(test_bot_interface_mover_parity,
-				setup_bot_interface,
-				teardown_bot_interface),
-	cmocka_unit_test_setup_teardown(test_bot_start_frame_entity_lifecycle,
-				setup_bot_interface,
-				teardown_bot_interface),
-	cmocka_unit_test_setup_teardown(test_bot_start_frame_updates_routing_diagnostics,
-				setup_bot_interface,
-				teardown_bot_interface),
-	cmocka_unit_test_setup_teardown(test_bot_end_to_end_pipeline_with_assets,
-				setup_bot_interface,
-				teardown_bot_interface),
-	cmocka_unit_test_setup_teardown(test_bot_bridge_tracks_mover_entity_updates,
-				setup_bot_interface,
-				teardown_bot_interface),
-};
+	const struct CMUnitTest tests[] = {
+		cmocka_unit_test(test_import_table_matches_retail_symbol_list),
+		cmocka_unit_test_setup_teardown(test_console_commands_register,
+							setup_bot_interface,
+							teardown_bot_interface),
+		cmocka_unit_test_setup_teardown(test_console_commands_invoke,
+							setup_bot_interface,
+							teardown_bot_interface),
+		cmocka_unit_test_setup_teardown(test_bot_load_map_requires_library,
+							setup_bot_interface,
+							teardown_bot_interface),
+		cmocka_unit_test_setup_teardown(test_bot_setup_library_guard_emits_message,
+							setup_bot_interface,
+							teardown_bot_interface),
+		cmocka_unit_test_setup_teardown(test_bot_shutdown_library_guard_emits_message,
+							setup_bot_interface,
+							teardown_bot_interface),
+		cmocka_unit_test_setup_teardown(test_bot_shutdown_client_requires_library,
+							setup_bot_interface,
+							teardown_bot_interface),
+		cmocka_unit_test_setup_teardown(test_bot_move_client_requires_library,
+							setup_bot_interface,
+							teardown_bot_interface),
+		cmocka_unit_test_setup_teardown(test_bot_client_settings_requires_library,
+							setup_bot_interface,
+							teardown_bot_interface),
+		cmocka_unit_test_setup_teardown(test_bot_settings_requires_library,
+							setup_bot_interface,
+							teardown_bot_interface),
+		cmocka_unit_test_setup_teardown(test_weight_exports_cover_guards_and_round_trip,
+							setup_bot_interface,
+							teardown_bot_interface),
+		cmocka_unit_test_setup_teardown(test_bot_test_debug_draw_toggles_bridge,
+							setup_bot_interface,
+							teardown_bot_interface),
+		cmocka_unit_test_setup_teardown(test_bot_load_map_and_sensory_queues,
+							setup_bot_interface,
+							teardown_bot_interface),
+		cmocka_unit_test_setup_teardown(test_bot_usehook_defaults_disabled,
+							setup_bot_interface,
+							teardown_bot_interface),
+		cmocka_unit_test_setup_teardown(test_bot_console_message_and_ai_pipeline,
+							setup_bot_interface,
+							teardown_bot_interface),
+		cmocka_unit_test_setup_teardown(test_bot_lib_var_set_propagates_import_status,
+							setup_bot_interface,
+							teardown_bot_interface),
+		cmocka_unit_test_setup_teardown(test_bot_lib_var_cache_tracks_updates,
+							setup_bot_interface,
+							teardown_bot_interface),
+		cmocka_unit_test_setup_teardown(test_bot_update_entity_populates_aas,
+							setup_bot_interface,
+							teardown_bot_interface),
+		cmocka_unit_test_setup_teardown(test_bot_interface_mover_parity,
+							setup_bot_interface,
+							teardown_bot_interface),
+		cmocka_unit_test_setup_teardown(test_bot_start_frame_entity_lifecycle,
+							setup_bot_interface,
+							teardown_bot_interface),
+		cmocka_unit_test_setup_teardown(test_bot_start_frame_updates_routing_diagnostics,
+							setup_bot_interface,
+							teardown_bot_interface),
+		cmocka_unit_test_setup_teardown(test_bot_end_to_end_pipeline_with_assets,
+							setup_bot_interface,
+							teardown_bot_interface),
+		cmocka_unit_test_setup_teardown(test_bot_bridge_tracks_mover_entity_updates,
+							setup_bot_interface,
+							teardown_bot_interface),
+	};
 
-    return cmocka_run_group_tests(tests, NULL, NULL);
+	return cmocka_run_group_tests(tests, NULL, NULL);
 }
-

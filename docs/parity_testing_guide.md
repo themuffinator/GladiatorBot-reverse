@@ -45,6 +45,7 @@ This guide outlines how to configure a development environment for the botlib pa
    - **Pass** – All expectations drawn from the HLIL trace matched (import-call order, guard behaviour, diagnostic strings). A clean run will show `100% tests passed` in CTest.
    - **Skip** – Any remaining `cmocka_skip()` markers in `test_bot_interface.c` indicate the scenario has not yet been implemented; replace these with assertions as reverse-engineering work firms up the behaviour. 【F:tests/parity/test_bot_interface.c†L1-L68】
    - **Fail** – Review the cmocka failure summary to identify which expectation broke. Most assertions will surface mismatched bridge callbacks, incorrect guard return codes, or missing diagnostics described in the parity README.
+   - **Import parity deviations** – The `test_import_table_matches_retail_symbol_list` check compares the current `bot_import_t` layout against the retail import names lifted from `dev_tools/game_source/botlib.h`. When it fails, the error message will cite the unexpected slot count or the first field whose name/offset diverges so you can reconcile the struct with the retail reference before rerunning CTest. 【F:tests/parity/test_bot_interface.c†L69-L136】【F:dev_tools/game_source/botlib.h†L230-L260】
 
 ## 3. Updating the expectations catalogue
 
