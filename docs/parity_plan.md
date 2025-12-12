@@ -30,7 +30,10 @@ The items below are ordered; "Work on the plan" means executing the next uncheck
 6. [ ] Exercise the headless Quake II parity harness with staged assets, triage divergences, and integrate the run into routine validation once stable.
    - Script a repeatable harness invocation (env setup + command) under `dev_tools/scripts/run_headless_parity.sh` with documented parameters.
    - Record observed deltas between HLIL and dedicated server runs, filing follow-up tasks here with owners and target releases.
+     - Owner: parity maintainers; Target: first scheduled headless run after Quake II assets are staged. Capture dedicated server logs from both rebuilt and retail modules and summarize behavioural diffs here.
+     - Current block: retail vs. reconstructed comparison deferred until Quake II assets are available in the environment. Use `dev_tools/scripts/run_headless_parity.sh` to export the documented env vars and run `ctest -R headless_quake2_parity` once assets land.
    - Gate merging of major botlib changes on a green headless parity run once flakiness is resolved.
+     - CI now runs the headless harness on PRs labelled `headless-parity` in addition to scheduled/workflow-dispatch invocations to enforce review-time coverage for risky botlib changes. Label major botlib PRs to require a fresh headless parity result before merging.
 
 ## Maintenance notes
 - Update this plan as tasks complete or new parity gaps are discovered, keeping the ordered list accurate so follow-on work can proceed from the top.

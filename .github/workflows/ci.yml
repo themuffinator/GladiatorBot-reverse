@@ -138,7 +138,7 @@ jobs:
   headless-quake2-parity:
     name: Headless Quake II parity check (Linux)
     runs-on: ubuntu-latest
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'headless-parity'))
     env:
       QUAKE2_DEDICATED_URL: ${{ github.event.inputs.quake2_dedicated_url || secrets.QUAKE2_DEDICATED_URL }}
       QUAKE2_PARITY_TIMEOUT: ${{ github.event.inputs.quake2_timeout || '180' }}
