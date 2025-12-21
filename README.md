@@ -23,7 +23,7 @@ python dev_tools/bootstrap_cmake.py
 
 The script creates the `build/` directory, configures CMake, and then invokes
 `cmake --build`. Use it any time you encounter the `missing CMakeCache.txt`
-error after cloning the repository on a new machine. 【F:dev_tools/bootstrap_cmake.py†L1-L189】
+error after cloning the repository on a new machine.
 
 ### Detailed steps
 
@@ -42,7 +42,7 @@ match the artifacts we ship.
 
 All platforms require CMake 3.16 or newer and Python 3.8+ (for tooling and
 tests).  The build system always enables position-independent code so static
-libraries can be linked into the shared `gladiator` module without relinking. 【F:CMakeLists.txt†L1-L28】
+libraries can be linked into the shared `gladiator` module without relinking.
 
 #### Configure and build the module
 
@@ -75,7 +75,7 @@ libraries can be linked into the shared `gladiator` module without relinking. �
    ```
 
    The script configures the default build tree when required and then invokes
-   the `gladiator` target for you. 【F:dev_tools/bootstrap_cmake.py†L1-L181】
+   the `gladiator` target for you.
 
 3. (Optional) Install the runtime into a staging directory that mimics your
    game or mod layout:
@@ -86,7 +86,7 @@ libraries can be linked into the shared `gladiator` module without relinking. �
 
    The install step drops the shared library and the generated CMake export file
    into the prefix so downstream projects can consume the reconstructed botlib
-   via `find_package(gladiator CONFIG)`. 【F:CMakeLists.txt†L18-L46】
+   via `find_package(gladiator CONFIG)`.
 
 ## Testing
 
@@ -107,7 +107,7 @@ cmake --build build --target botlib_parity_tests
 The FetchContent script retrieves cmocka from GitHub so ensure the host has
 outbound HTTPS access.  If the dependency cannot be fetched, re-run CMake with
 `-DBOTLIB_PARITY_FRAMEWORK=none` or `-DBOTLIB_PARITY_ENABLE_SOURCES=OFF` to skip the cmocka targets and still build the
-core library. 【F:tests/CMakeLists.txt†L7-L33】
+core library.
 
 ## Asset packaging workflow
 
